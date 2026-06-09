@@ -16,20 +16,32 @@ export default function useWebRTC() {
   const [speakerOn, setSpeakerOn] = useState(true)
   const [peerCount, setPeerCount] = useState(0)
   const [isSharing, setIsSharing] = useState(false)
-  const [screenStream, setScreenStream] = useState(null) // 本地或远程屏幕流
-  const audioRefs = useRef(new Map()) // userId → HTMLAudioElement
+  const [screenStream, setScreenStream] = useState(null)
+  const audioRefs = useRef(new Map())
+  const micOnRef = useRef(true)
+  const speakerOnRef = useRef(true)
+  micOnRef.current = micOn
+  speakerOnRef.current = speakerOn
 
   // 远程音频流到达
   const handleRemoteStream = useCallback((peerId, stream) => {
     const old = audioRefs.current.get(peerId)
-    if (old) { old.remove(); audioRefs.current.delete(peerId) }
+    if (old) { old.srcObject = null; old.remove(); audioRefs.current.delete(peerId) }
 
     const audio = new Audio()
     audio.srcObject = stream
     audio.dataset.peer = peerId
     audio.autoplay = true
-    audio.play().catch((e) => console.warn('[Audio] 播放失败:', e))
+    audio.muted = !speakerOnRef.current
     document.body.appendChild(audio)
+    // 尝试播放，失败则等待用户交互
+    audio.play().catch(() => {
+      const resume = () => {
+        audio.play().catch(() => {})
+        document.removeEventListener('click', resume)
+      }
+      document.addEventListener('click', resume, { once: true })
+    })
     audioRefs.current.set(peerId, audio)
   }, [])
 
@@ -67,6 +79,8 @@ export default function useWebRTC() {
         })
         await manager.start()
         if (!mounted) return
+        // 应用当前开关状态
+        if (!micOnRef.current) manager.toggleMic(false)
         console.log('[useWebRTC] WebRTC 已初始化')
       } catch (err) {
         console.error('[useWebRTC] 初始化失败:', err)

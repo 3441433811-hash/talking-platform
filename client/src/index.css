@@ -47,3 +47,27 @@ input:focus {
   50% { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* --- 语音 AI 动画 --- */
+@keyframes voicePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.85; }
+}
+
+@keyframes voiceRipple {
+  0% { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+@keyframes voiceSpeakingWave {
+  0%, 100% { transform: scaleX(0.6); opacity: 0.5; }
+  50% { transform: scaleX(1); opacity: 1; }
+}
+
+.voice-pulse {
+  animation: voiceRipple 1.5s ease-out infinite;
+}
+
+.voice-speaking {
+  animation: voiceSpeakingWave 0.8s ease-in-out infinite;
+}

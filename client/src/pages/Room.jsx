@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getRoom, getMessages } from '../services/api'
 import useSocket from '../hooks/useSocket'
 import useWebRTC from '../hooks/useWebRTC'
+import { getWebRTCManager } from '../services/webrtc'
 import { sendMessage, leaveRoom, aiQuery, getSocket } from '../services/socket'
 import useStore from '../store/useStore'
 
@@ -20,7 +21,16 @@ export default function Room() {
   } = useStore()
 
   const [input, setInput] = useState('')
+  const [voiceAiOn, setVoiceAiOn] = useState(false)
+  const [voiceListening, setVoiceListening] = useState(false)
+  const [voiceText, setVoiceText] = useState('')
+  const [ttsMuted, setTtsMuted] = useState(false)
+  const [voiceSpeaking, setVoiceSpeaking] = useState(false)
   const chatEndRef = useRef(null)
+  const screenVideoRef = useRef(null)
+  const voicePendingRef = useRef(false)
+  const recognitionRef = useRef(null)
+  const synthRef = useRef(window.speechSynthesis)
 
   // 加载房间信息和历史消息
   useEffect(() => {
@@ -33,6 +43,116 @@ export default function Room() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // --- 语音识别初始化 ---
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) return
+
+    const rec = new SpeechRecognition()
+    rec.continuous = true
+    rec.interimResults = true
+    rec.lang = 'zh-CN'
+    recognitionRef.current = rec
+
+    rec.onresult = (event) => {
+      let interim = ''
+      let final = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript
+        if (event.results[i].isFinal) final += t
+        else interim += t
+      }
+      if (interim) setVoiceText(interim)
+      if (final) {
+        setVoiceText('')
+        voicePendingRef.current = true
+        aiQuery(roomId, final.trim())
+      }
+    }
+
+    rec.onerror = (event) => {
+      console.error('[VoiceAI] Speech error:', event.error)
+      if (event.error === 'not-allowed') {
+        setVoiceText('麦克风权限未授权')
+      }
+      setVoiceListening(false)
+    }
+
+    rec.onend = () => {
+      setVoiceListening(false)
+      // 语音AI仍开启时自动重新开始
+      if (voiceAiOnRef?.current) {
+        setTimeout(() => {
+          try { rec.start(); setVoiceListening(true) } catch (_) {}
+        }, 300)
+      }
+    }
+
+    return () => {
+      try { rec.abort() } catch (_) {}
+    }
+  }, [roomId])
+
+  // 保持 ref 同步
+  const voiceAiOnRef = useRef(voiceAiOn)
+  voiceAiOnRef.current = voiceAiOn
+
+  // --- AI 回复 TTS ---
+  useEffect(() => {
+    const socket = getSocket()
+    if (!socket) return
+
+    const handleAiDone = ({ content }) => {
+      if (voicePendingRef.current) {
+        voicePendingRef.current = false
+        if (!ttsMuted && content) speakText(content)
+      }
+    }
+
+    socket.on('ai-done', handleAiDone)
+    return () => { socket.off('ai-done', handleAiDone) }
+  }, [ttsMuted, roomId])
+
+  // --- TTS 语音合成 ---
+  const speakText = useCallback((text) => {
+    const synth = synthRef.current
+    if (!synth) return
+
+    synth.cancel()
+    const utter = new SpeechSynthesisUtterance(text)
+    utter.lang = 'zh-CN'
+    utter.rate = 1.1
+    utter.pitch = 1.0
+
+    const voices = synth.getVoices()
+    const zh = voices.find(v => v.lang.startsWith('zh'))
+    if (zh) utter.voice = zh
+
+    utter.onstart = () => setVoiceSpeaking(true)
+    utter.onend = () => setVoiceSpeaking(false)
+    utter.onerror = () => setVoiceSpeaking(false)
+    synth.speak(utter)
+  }, [])
+
+  // --- 语音 AI 开关 ---
+  const toggleVoiceAI = useCallback(() => {
+    const next = !voiceAiOn
+    setVoiceAiOn(next)
+    if (next) {
+      const rec = recognitionRef.current
+      if (rec) {
+        try { rec.start(); setVoiceListening(true) } catch (_) {}
+      }
+    } else {
+      const rec = recognitionRef.current
+      if (rec) try { rec.abort() } catch (_) {}
+      setVoiceListening(false)
+      setVoiceText('')
+      if (synthRef.current) synthRef.current.cancel()
+      setVoiceSpeaking(false)
+    }
+  }, [voiceAiOn])
 
   const handleSend = (e) => {
     e.preventDefault()
@@ -57,13 +177,27 @@ export default function Room() {
     getSocket()?.emit('toggle-ai', { roomId, enabled })
   }
 
-  // 将屏幕流绑定到 video 元素
-  const screenVideoRef = useRef(null)
+  // 将屏幕流绑定到 video 元素（多重兜底）
   useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream
+    if (screenVideoRef.current) {
+      // 优先用 hook 里的 screenStream
+      if (screenStream) {
+        screenVideoRef.current.srcObject = screenStream
+        screenVideoRef.current.play().catch(() => {})
+        return
+      }
+      // 兜底：直接从 WebRTC manager 取远程屏幕流
+      const mgr = getWebRTCManager?.()
+      if (mgr?.remoteScreenStreams?.size) {
+        const fallbackStream = mgr.remoteScreenStreams.values().next().value
+        if (fallbackStream) {
+          console.log('[Room] 兜底绑定远程屏幕流')
+          screenVideoRef.current.srcObject = fallbackStream
+          screenVideoRef.current.play().catch(() => {})
+        }
+      }
     }
-  }, [screenStream])
+  }, [screenStream, screenSharer, isSharing])
 
   return (
     <div style={styles.wrapper}>
@@ -88,11 +222,40 @@ export default function Room() {
         </aside>
 
         {/* 中间：主内容区 */}
-        <main style={styles.mainArea}>
+        <main style={styles.mainArea} data-main-area>
           {isSharing || screenSharer ? (
             <div style={styles.screenView}>
-              <video ref={screenVideoRef} autoPlay playsInline style={styles.screenVideo}></video>
+              <video ref={screenVideoRef} autoPlay playsInline muted style={styles.screenVideo}></video>
               <p style={styles.screenLabel}>{screenSharer || '你'} 正在共享屏幕</p>
+            </div>
+          ) : voiceAiOn ? (
+            <div style={styles.voiceAiPanel}>
+              {voiceListening ? (
+                <>
+                  <div style={styles.voiceMicIcon}>🎤</div>
+                  <div className="voice-pulse" style={styles.voicePulseRing}></div>
+                  <p style={styles.voiceLabel}>正在听...</p>
+                  {voiceText && <p style={styles.voiceLiveText}>{voiceText}</p>}
+                </>
+              ) : aiTyping && voicePendingRef.current ? (
+                <>
+                  <div style={styles.voiceMicIcon}>🤔</div>
+                  <p style={styles.voiceLabel}>思考中...</p>
+                  {aiStreamContent && <p style={styles.voiceLiveText}>{aiStreamContent}</p>}
+                </>
+              ) : voiceSpeaking ? (
+                <>
+                  <div style={styles.voiceMicIcon}>🔊</div>
+                  <div className="voice-speaking" style={styles.voiceSpeakBar}></div>
+                  <p style={styles.voiceLabel}>AI 正在说...</p>
+                </>
+              ) : (
+                <>
+                  <div style={styles.voiceMicIcon}>🤖</div>
+                  <p style={styles.voiceLabel}>语音 AI 已开启</p>
+                  <p style={styles.voiceHint}>对着麦克风说话，AI 会用语音回复你</p>
+                </>
+              )}
             </div>
           ) : (
             <div style={styles.placeholder}>
@@ -170,6 +333,35 @@ export default function Room() {
           onClick={toggleScreenShare}>
           📺 {isSharing ? '停止' : '共享屏幕'}
         </button>
+        <button
+          style={{
+            ...styles.ctrlBtn,
+            background: voiceAiOn ? '#6c63ff' : 'rgba(255,255,255,0.08)',
+            width: 'auto',
+            padding: '0 16px',
+            fontSize: 14,
+            fontWeight: 600,
+          }}
+          onClick={toggleVoiceAI}
+          title="🤖 语音 AI 对话"
+        >
+          🤖 {voiceAiOn ? '语音AI·开' : '语音AI'}
+        </button>
+        {voiceAiOn && (
+          <button
+            style={{
+              ...styles.ctrlBtn,
+              background: ttsMuted ? '#ff4757' : 'rgba(255,255,255,0.08)',
+              width: 44,
+              height: 44,
+              fontSize: 18,
+            }}
+            onClick={() => setTtsMuted(!ttsMuted)}
+            title={ttsMuted ? '开启 AI 语音回复' : '静音 AI 语音回复'}
+          >
+            {ttsMuted ? '🔇' : '🔊'}
+          </button>
+        )}
         <span style={{ ...styles.peerBadge }} title="P2P 连接数">
           🔗 {peerCount}
         </span>
@@ -191,7 +383,7 @@ const styles = {
   placeholder: { textAlign: 'center', color: '#6b6b80' },
   voiceWave: { marginBottom: 16 },
   screenView: { width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  screenVideo: { width: '100%', maxHeight: '70vh', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)' },
+  screenVideo: { width: '100%', minHeight: 300, maxHeight: '70vh', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: '#000' },
   screenLabel: { marginTop: 8, color: '#6c63ff', fontSize: 14 },
   chatPanel: { width: 320, display: 'flex', flexDirection: 'column', borderLeft: '1px solid rgba(255,255,255,0.08)' },
   chatHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' },
@@ -210,4 +402,12 @@ const styles = {
   controlBar: { display: 'flex', justifyContent: 'center', gap: 16, padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.95)' },
   ctrlBtn: { width: 50, height: 50, borderRadius: 14, border: 'none', color: '#fff', fontSize: 22, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' },
   peerBadge: { padding: '8px 16px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', color: '#a0a0b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 },
+  // 语音 AI 样式
+  voiceAiPanel: { textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, position: 'relative' },
+  voiceMicIcon: { fontSize: 64, lineHeight: 1, animation: 'voicePulse 2s ease-in-out infinite' },
+  voicePulseRing: { position: 'absolute', top: 0, width: 80, height: 80, borderRadius: '50%', border: '2px solid #6c63ff', opacity: 0.6, animation: 'voiceRipple 1.5s ease-out infinite' },
+  voiceLabel: { color: '#e8e8f0', fontSize: 18, fontWeight: 600, marginTop: 8 },
+  voiceHint: { color: '#6b6b80', fontSize: 14 },
+  voiceLiveText: { color: '#00d4ff', fontSize: 16, maxWidth: 400, lineHeight: 1.5, minHeight: 24, fontStyle: 'italic' },
+  voiceSpeakBar: { width: 200, height: 4, background: '#6c63ff', borderRadius: 2, opacity: 0.8 },
 }

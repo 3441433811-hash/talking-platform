@@ -15,8 +15,11 @@ const useStore = create((set) => ({
 
   // 在线成员
   members: [],
-  setMembers: (members) => set({ members }),
-  addMember: (member) => set((s) => ({ members: [...s.members, member] })),
+  setMembers: (members) => set({ members: members.filter((m, i, a) => a.findIndex(x => x.id === m.id) === i) }),
+  addMember: (member) => set((s) => {
+    if (s.members.some(m => m.id === member.id)) return s
+    return { members: [...s.members, member] }
+  }),
   removeMember: (userId) => set((s) => ({ members: s.members.filter((m) => m.id !== userId) })),
 
   // 某成员说话状态

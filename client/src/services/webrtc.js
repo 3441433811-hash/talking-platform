@@ -1,7 +1,7 @@
 // WebRTC 管理器 — 处理多人语音通话（Mesh 架构）
 // 每个远程用户维护一个 RTCPeerConnection，通过 Socket.IO 信令交换 SDP/ICE
 
-import { sendAnswer, sendOffer, sendIceCandidate } from './socket'
+import { sendAnswer, sendOffer, sendIceCandidate, getSocket } from './socket'
 
 const ICE_SERVERS = {
   iceServers: [
@@ -29,6 +29,7 @@ class WebRTCManager {
     this.peers = new Map()                        // userId → RTCPeerConnection
     this.remoteStreams = new Map()                // userId → MediaStream (音频)
     this.remoteScreenStreams = new Map()          // userId → MediaStream (屏幕)
+    this.screenVideos = new Map()                 // userId → HTMLVideoElement
     this.audioContext = null                      // 用于音量检测
     this.analysers = new Map()                    // userId → AnalyserNode
 
@@ -164,6 +165,7 @@ class WebRTCManager {
     const { userId } = e.detail
     console.log('[WebRTC] 远程用户停止屏幕共享:', userId)
     this.remoteScreenStreams.delete(userId)
+    this._hideScreenVideo(userId)
     if (this.onScreenShare) {
       this.onScreenShare(null, null, false)
     }
@@ -182,13 +184,28 @@ class WebRTCManager {
       this.screenStream = stream
       this.isSharingScreen = true
 
-      // 添加到所有已有 PeerConnection
+      // 添加到所有已有 PeerConnection 并显式重协商
       const videoTrack = stream.getVideoTracks()[0]
-      this.peers.forEach((pc) => {
-        if (pc.connectionState === 'connected') {
-          pc.addTrack(videoTrack, stream)
+      const skt = getSocket()
+      console.error('[DEBUG] peers count:', this.peers.size, 'socket:', !!skt?.connected)
+      for (const [peerId, pc] of this.peers) {
+        console.error('[DEBUG] peer:', peerId, 'state:', pc.connectionState, 'signal:', pc.signalingState)
+        if (pc.connectionState === 'closed' || pc.connectionState === 'failed') continue
+        pc.addTrack(videoTrack, stream)
+        try {
+          console.error('[DEBUG] creating offer for:', peerId)
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          if (skt?.connected) {
+            skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+            console.error('[DEBUG] offer sent via socket for:', peerId)
+          } else {
+            console.error('[DEBUG] socket not connected!')
+          }
+        } catch (err) {
+          console.error('[DEBUG] renegotiation error:', peerId, err.message)
         }
-      })
+      }
 
       // 用户通过浏览器 UI 停止共享时自动清理
       videoTrack.onended = () => {
@@ -223,6 +240,11 @@ class WebRTCManager {
 
     this.screenStream = null
     this.isSharingScreen = false
+
+    // 清理所有屏幕视频
+    for (const peerId of this.screenVideos.keys()) {
+      this._hideScreenVideo(peerId)
+    }
 
     console.log('[WebRTC] 屏幕共享已停止')
     if (this.onScreenShare) {
@@ -264,11 +286,21 @@ class WebRTCManager {
       const isVideo = event.track.kind === 'video'
 
       if (isVideo) {
-        // 屏幕共享视频流
-        console.log('[WebRTC] 收到远程屏幕流:', peerId)
+        // 屏幕共享视频流 — 直接创建 video 元素显示
+        console.error('[WebRTC] ontrack VIDEO:', peerId, 'streams:', event.streams.length)
         this.remoteScreenStreams.set(peerId, remoteStream)
+
+        // 直接创建并挂载 video 元素，绕过 React 状态
+        this._showScreenVideo(peerId, remoteStream)
+
+        // 仍通知 React（用于 UI 状态同步）
         if (this.onScreenShare) {
           this.onScreenShare(peerId, remoteStream, false)
+        }
+
+        // track 结束时清理
+        event.track.onended = () => {
+          this._hideScreenVideo(peerId)
         }
       } else {
         // 音频流
@@ -323,6 +355,8 @@ class WebRTCManager {
       this.peers.delete(peerId)
     }
     this.remoteStreams.delete(peerId)
+    this.remoteScreenStreams.delete(peerId)
+    this._hideScreenVideo(peerId)
     if (this.analysers.has(peerId)) {
       this.analysers.delete(peerId)
     }
@@ -333,6 +367,66 @@ class WebRTCManager {
   _notifyPeerCount() {
     if (this.onPeerCountChange) {
       this.onPeerCountChange(this.peers.size)
+    }
+  }
+
+  // ==================== 屏幕视频直接渲染 ====================
+
+  _showScreenVideo(peerId, stream) {
+    this._hideScreenVideo(peerId)
+
+    const video = document.createElement('video')
+    video.srcObject = stream
+    video.autoplay = true
+    video.playsInline = true
+    video.muted = true
+    video.id = `screen-video-${peerId}`
+    Object.assign(video.style, {
+      width: '100%',
+      maxWidth: '100%',
+      maxHeight: '70vh',
+      borderRadius: '12px',
+      border: '1px solid rgba(255,255,255,0.1)',
+      background: '#000',
+    })
+
+    // 找主内容区，替换其内容
+    const mainArea = document.querySelector('[data-main-area]')
+    if (mainArea) {
+      // 隐藏原有占位内容
+      const placeholder = mainArea.querySelector('div')
+      if (placeholder) placeholder.style.display = 'none'
+      mainArea.appendChild(video)
+    } else {
+      document.body.appendChild(video)
+    }
+
+    this.screenVideos.set(peerId, video)
+    video.play().catch(() => {})
+    console.error('[WebRTC] 屏幕视频已挂载:', peerId, 'track:', stream.getVideoTracks()[0]?.readyState)
+  }
+
+  _hideScreenVideo(peerId) {
+    const video = this.screenVideos.get(peerId)
+    if (video) {
+      video.srcObject = null
+      video.remove()
+      this.screenVideos.delete(peerId)
+    }
+    // 恢复占位内容
+    const mainArea = document.querySelector('[data-main-area]')
+    if (mainArea) {
+      const placeholder = mainArea.querySelector('div')
+      if (placeholder) placeholder.style.display = ''
+    }
+  }
+
+  _hideScreenVideo(peerId) {
+    const video = this.screenVideos.get(peerId)
+    if (video) {
+      video.srcObject = null
+      video.remove()
+      this.screenVideos.delete(peerId)
     }
   }
 
