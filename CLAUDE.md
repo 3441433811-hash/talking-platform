@@ -164,11 +164,18 @@ taskkill //F //PID <PID>
 - 确认 `server/.env` 中 `PORT=7897`（不是 3001）
 - 确认 Vite dev server 的 proxy target 是 `http://localhost:7897`
 
+### 移动端 / 局域网访问
+- **音频输出**：手机浏览器阻止自动播放，需先点击页面解锁 AudioContext
+- **麦克风**：移动端访问局域网 IP（`http://192.168.x.x`）不是安全上下文，`getUserMedia` 会被拒绝 → 需 HTTPS 或 localhost
+- **外网隧道**：localtunnel、Cloudflare Tunnel、serveo、localhost.run 在国内均被 GFW 拦截（400 Bad Request），需自备 VPS 中转
+- **Vercel**：OAuth 页面在国内无法打开，需梯子
+
 ## 待完善
 
 - [ ] 数据库持久化
 - [ ] TURN 服务器
 - [ ] 屏幕共享视频自适应窗口大小（当前固定 70vw 居中，未处理侧栏响应式变化）
+- [ ] 移动端 HTTPS 支持（mkcert / 正式证书）
 - [ ] 图片/文件消息
 - [ ] 房主管理（踢人、禁言）
 - [ ] `.env.example` 端口改为 7897
