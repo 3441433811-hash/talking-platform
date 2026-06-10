@@ -4,10 +4,10 @@ import {
   destroyWebRTCManager,
   getWebRTCManager,
 } from '../services/webrtc'
-import { startScreenShare as notifyScreenShareStart } from '../services/socket'
+import { startScreenShare as notifyScreenShareStart, stopScreenShare as notifyScreenShareStop } from '../services/socket'
 import useStore from '../store/useStore'
 
-export default function useWebRTC() {
+export default function useWebRTC(roomId) {
   const user = useStore((s) => s.user)
   const setSpeaking = useStore((s) => s.setSpeaking)
   const setScreenSharer = useStore((s) => s.setScreenSharer)
@@ -123,13 +123,17 @@ export default function useWebRTC() {
 
     if (manager.isSharingScreen) {
       manager.stopScreenShare()
+      if (roomId) notifyScreenShareStop(roomId)
     } else {
-      const stream = await manager.startScreenShare()
-      if (stream) {
-        notifyScreenShareStart()
+      const stream = await manager.startScreenShare(() => {
+        // 用户通过浏览器 UI 停止共享时，通知远端
+        if (roomId) notifyScreenShareStop(roomId)
+      })
+      if (stream && roomId) {
+        notifyScreenShareStart(roomId)
       }
     }
-  }, [])
+  }, [roomId])
 
   return {
     micOn,

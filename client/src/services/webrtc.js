@@ -100,19 +100,27 @@ class WebRTCManager {
 
     console.log('[WebRTC] 收到 Offer，来自:', peerId)
 
-    // 如果已有连接，先关闭旧的
-    if (this.peers.has(peerId)) {
-      this._removePeer(peerId)
-    }
-
     try {
+      // 关键修复：如果已有 PC，复用现有连接处理重协商（屏幕共享添加 track 等场景）
+      // 不再销毁旧的 PC，否则会导致 ontrack 事件丢失和 ICE 重连
+      if (this.peers.has(peerId)) {
+        const pc = this.peers.get(peerId)
+        console.log('[WebRTC] 复用已有 PC 处理重协商, signalingState:', pc.signalingState)
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        sendAnswer(fromId, pc.localDescription)
+        console.log('[WebRTC] 重协商 Answer 已发送:', peerId)
+        return
+      }
+
+      // 新连接：创建 PeerConnection
       await this._createPeerConnection(peerId)
       const pc = this.peers.get(peerId)
       await pc.setRemoteDescription(new RTCSessionDescription(sdp))
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
 
-      // 发送 Answer
       sendAnswer(fromId, pc.localDescription)
     } catch (err) {
       console.error('[WebRTC] 处理 Offer 失败:', err)
@@ -153,7 +161,7 @@ class WebRTCManager {
 
   // ==================== 屏幕共享 ====================
 
-  // 收到远程屏幕共享开始通知
+  // 收到远程屏幕共享开始通知（信令层通知，主要用于日志；实际视频流通过 ontrack 到达）
   _handleScreenShareStart(e) {
     const { userId } = e.detail
     console.log('[WebRTC] 远程用户开始屏幕共享:', userId)
@@ -164,7 +172,6 @@ class WebRTCManager {
   _handleScreenShareStop(e) {
     const { userId } = e.detail
     console.log('[WebRTC] 远程用户停止屏幕共享:', userId)
-    this.remoteScreenStreams.delete(userId)
     this._hideScreenVideo(userId)
     if (this.onScreenShare) {
       this.onScreenShare(null, null, false)
@@ -172,7 +179,7 @@ class WebRTCManager {
   }
 
   // 开始本地屏幕共享
-  async startScreenShare() {
+  async startScreenShare(onStop) {
     if (this.isSharingScreen) return null
 
     try {
@@ -187,29 +194,27 @@ class WebRTCManager {
       // 添加到所有已有 PeerConnection 并显式重协商
       const videoTrack = stream.getVideoTracks()[0]
       const skt = getSocket()
-      console.error('[DEBUG] peers count:', this.peers.size, 'socket:', !!skt?.connected)
+      console.log('[WebRTC] 开始屏幕共享, peers:', this.peers.size, 'track readyState:', videoTrack?.readyState)
       for (const [peerId, pc] of this.peers) {
-        console.error('[DEBUG] peer:', peerId, 'state:', pc.connectionState, 'signal:', pc.signalingState)
         if (pc.connectionState === 'closed' || pc.connectionState === 'failed') continue
         pc.addTrack(videoTrack, stream)
         try {
-          console.error('[DEBUG] creating offer for:', peerId)
           const offer = await pc.createOffer()
           await pc.setLocalDescription(offer)
           if (skt?.connected) {
             skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
-            console.error('[DEBUG] offer sent via socket for:', peerId)
-          } else {
-            console.error('[DEBUG] socket not connected!')
           }
+          console.log('[WebRTC] renegotiation offer sent to:', peerId)
         } catch (err) {
-          console.error('[DEBUG] renegotiation error:', peerId, err.message)
+          console.error('[WebRTC] renegotiation error:', peerId, err.message)
         }
       }
 
       // 用户通过浏览器 UI 停止共享时自动清理
       videoTrack.onended = () => {
+        console.log('[WebRTC] 屏幕视频 track 结束 (浏览器停止共享)')
         this.stopScreenShare()
+        if (onStop) onStop()
       }
 
       console.log('[WebRTC] 屏幕共享已开始')
@@ -230,7 +235,6 @@ class WebRTCManager {
 
     const tracks = this.screenStream.getVideoTracks()
     tracks.forEach((track) => {
-      // 从所有 PeerConnection 中移除
       this.peers.forEach((pc) => {
         const sender = pc.getSenders().find((s) => s.track === track)
         if (sender) pc.removeTrack(sender)
@@ -240,11 +244,6 @@ class WebRTCManager {
 
     this.screenStream = null
     this.isSharingScreen = false
-
-    // 清理所有屏幕视频
-    for (const peerId of this.screenVideos.keys()) {
-      this._hideScreenVideo(peerId)
-    }
 
     console.log('[WebRTC] 屏幕共享已停止')
     if (this.onScreenShare) {
@@ -280,27 +279,31 @@ class WebRTCManager {
 
     // 处理远程音轨/屏幕视频轨
     pc.ontrack = (event) => {
-      const [remoteStream] = event.streams
-      if (!remoteStream) return
-
+      // event.streams 在 renegotiation 场景下可能为空数组（Chrome bug）
+      // 降级方案：从 track 手动构造 MediaStream
+      const remoteStream = event.streams[0] || new MediaStream([event.track])
       const isVideo = event.track.kind === 'video'
 
-      if (isVideo) {
-        // 屏幕共享视频流 — 直接创建 video 元素显示
-        console.error('[WebRTC] ontrack VIDEO:', peerId, 'streams:', event.streams.length)
-        this.remoteScreenStreams.set(peerId, remoteStream)
+      console.log('[WebRTC] ontrack:', isVideo ? 'VIDEO' : 'AUDIO', 'peer:', peerId,
+        'streamsCount:', event.streams.length, 'trackState:', event.track.readyState)
 
-        // 直接创建并挂载 video 元素，绕过 React 状态
+      if (isVideo) {
+        // 屏幕共享视频流 — 直接挂载到 body（独立于 React 管控，避免 reconciliation 冲突）
+        this.remoteScreenStreams.set(peerId, remoteStream)
         this._showScreenVideo(peerId, remoteStream)
 
-        // 仍通知 React（用于 UI 状态同步）
+        // 同时通知 React 更新状态（UI 标签等）
         if (this.onScreenShare) {
           this.onScreenShare(peerId, remoteStream, false)
         }
 
         // track 结束时清理
         event.track.onended = () => {
+          console.log('[WebRTC] 屏幕视频 track 结束:', peerId)
           this._hideScreenVideo(peerId)
+          if (this.onScreenShare) {
+            this.onScreenShare(null, null, false)
+          }
         }
       } else {
         // 音频流
@@ -355,7 +358,6 @@ class WebRTCManager {
       this.peers.delete(peerId)
     }
     this.remoteStreams.delete(peerId)
-    this.remoteScreenStreams.delete(peerId)
     this._hideScreenVideo(peerId)
     if (this.analysers.has(peerId)) {
       this.analysers.delete(peerId)
@@ -381,29 +383,40 @@ class WebRTCManager {
     video.playsInline = true
     video.muted = true
     video.id = `screen-video-${peerId}`
-    Object.assign(video.style, {
-      width: '100%',
-      maxWidth: '100%',
-      maxHeight: '70vh',
-      borderRadius: '12px',
-      border: '1px solid rgba(255,255,255,0.1)',
-      background: '#000',
-    })
+    // 屏幕居中，固定最小尺寸避免视频元数据未加载时塌陷为 0 高度
+    video.style.cssText = `
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      max-width: 70vw;
+      min-width: 300px;
+      max-height: 75vh;
+      min-height: 200px;
+      border-radius: 12px;
+      border: 2px solid rgba(108, 99, 255, 0.5);
+      z-index: 500;
+      box-shadow: 0 0 40px rgba(0,0,0,0.6);
+      opacity: 0;
+      transition: opacity 0.2s ease-in;
+    `
 
-    // 找主内容区，替换其内容
-    const mainArea = document.querySelector('[data-main-area]')
-    if (mainArea) {
-      // 隐藏原有占位内容
-      const placeholder = mainArea.querySelector('div')
-      if (placeholder) placeholder.style.display = 'none'
-      mainArea.appendChild(video)
-    } else {
-      document.body.appendChild(video)
-    }
+    // 视频元数据加载后再显示，避免空白元素闪烁
+    video.addEventListener('loadedmetadata', () => {
+      video.style.opacity = '1'
+    }, { once: true })
 
+    document.body.appendChild(video)
     this.screenVideos.set(peerId, video)
-    video.play().catch(() => {})
-    console.error('[WebRTC] 屏幕视频已挂载:', peerId, 'track:', stream.getVideoTracks()[0]?.readyState)
+
+    const playPromise = video.play()
+    if (playPromise) {
+      playPromise.catch((e) => console.warn('[WebRTC] video.play() 被阻:', e.name))
+    }
+
+    const track = stream.getVideoTracks()[0]
+    console.log('[WebRTC] 屏幕视频已挂载到主界面, track:', track?.readyState,
+      'streamId:', stream.id, 'trackCount:', stream.getVideoTracks().length)
   }
 
   _hideScreenVideo(peerId) {
@@ -412,22 +425,9 @@ class WebRTCManager {
       video.srcObject = null
       video.remove()
       this.screenVideos.delete(peerId)
+      console.log('[WebRTC] 屏幕视频已移除:', peerId)
     }
-    // 恢复占位内容
-    const mainArea = document.querySelector('[data-main-area]')
-    if (mainArea) {
-      const placeholder = mainArea.querySelector('div')
-      if (placeholder) placeholder.style.display = ''
-    }
-  }
-
-  _hideScreenVideo(peerId) {
-    const video = this.screenVideos.get(peerId)
-    if (video) {
-      video.srcObject = null
-      video.remove()
-      this.screenVideos.delete(peerId)
-    }
+    this.remoteScreenStreams.delete(peerId)
   }
 
   // ==================== 音频控制 ====================

@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { getRoom, getMessages } from '../services/api'
 import useSocket from '../hooks/useSocket'
 import useWebRTC from '../hooks/useWebRTC'
-import { getWebRTCManager } from '../services/webrtc'
 import { sendMessage, leaveRoom, aiQuery, getSocket } from '../services/socket'
 import useStore from '../store/useStore'
 
@@ -11,7 +10,7 @@ export default function Room() {
   const { id: roomId } = useParams()
   const navigate = useNavigate()
   useSocket(roomId)
-  const { micOn, speakerOn, peerCount, isSharing, screenStream, toggleMic, toggleSpeaker, toggleScreenShare } = useWebRTC()
+  const { micOn, speakerOn, peerCount, isSharing, toggleMic, toggleSpeaker, toggleScreenShare } = useWebRTC(roomId)
 
   const {
     user, currentRoom, setCurrentRoom,
@@ -27,7 +26,6 @@ export default function Room() {
   const [ttsMuted, setTtsMuted] = useState(false)
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
   const chatEndRef = useRef(null)
-  const screenVideoRef = useRef(null)
   const voicePendingRef = useRef(false)
   const recognitionRef = useRef(null)
   const synthRef = useRef(window.speechSynthesis)
@@ -177,28 +175,6 @@ export default function Room() {
     getSocket()?.emit('toggle-ai', { roomId, enabled })
   }
 
-  // 将屏幕流绑定到 video 元素（多重兜底）
-  useEffect(() => {
-    if (screenVideoRef.current) {
-      // 优先用 hook 里的 screenStream
-      if (screenStream) {
-        screenVideoRef.current.srcObject = screenStream
-        screenVideoRef.current.play().catch(() => {})
-        return
-      }
-      // 兜底：直接从 WebRTC manager 取远程屏幕流
-      const mgr = getWebRTCManager?.()
-      if (mgr?.remoteScreenStreams?.size) {
-        const fallbackStream = mgr.remoteScreenStreams.values().next().value
-        if (fallbackStream) {
-          console.log('[Room] 兜底绑定远程屏幕流')
-          screenVideoRef.current.srcObject = fallbackStream
-          screenVideoRef.current.play().catch(() => {})
-        }
-      }
-    }
-  }, [screenStream, screenSharer, isSharing])
-
   return (
     <div style={styles.wrapper}>
       {/* 顶部栏 */}
@@ -224,9 +200,11 @@ export default function Room() {
         {/* 中间：主内容区 */}
         <main style={styles.mainArea} data-main-area>
           {isSharing || screenSharer ? (
-            <div style={styles.screenView}>
-              <video ref={screenVideoRef} autoPlay playsInline muted style={styles.screenVideo}></video>
-              <p style={styles.screenLabel}>{screenSharer || '你'} 正在共享屏幕</p>
+            <div style={styles.placeholder}>
+              <span style={{ fontSize: 48 }}>📺</span>
+              <p style={{ color: '#6c63ff', marginTop: 8 }}>
+                {isSharing ? '你正在共享屏幕' : `${screenSharer} 正在共享屏幕`}
+              </p>
             </div>
           ) : voiceAiOn ? (
             <div style={styles.voiceAiPanel}>
@@ -382,9 +360,7 @@ const styles = {
   mainArea: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 },
   placeholder: { textAlign: 'center', color: '#6b6b80' },
   voiceWave: { marginBottom: 16 },
-  screenView: { width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  screenVideo: { width: '100%', minHeight: 300, maxHeight: '70vh', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: '#000' },
-  screenLabel: { marginTop: 8, color: '#6c63ff', fontSize: 14 },
+  screenLabel: { color: '#6c63ff', fontSize: 14 },
   chatPanel: { width: 320, display: 'flex', flexDirection: 'column', borderLeft: '1px solid rgba(255,255,255,0.08)' },
   chatHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' },
   aiToggle: { fontSize: 12, color: '#a0a0b8', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' },

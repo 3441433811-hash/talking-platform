@@ -93,10 +93,14 @@ export default function useSocket(roomId) {
     socket.on('screen-share-start', ({ userId }) => {
       setScreenSharer(userId)
       addMessage({ type: 'system', content: `${userId} 开始屏幕共享`, id: Date.now().toString() })
+      // 通知 WebRTC 管理器（用于日志和状态同步；实际视频流通过 ontrack 到达）
+      window.dispatchEvent(new CustomEvent('webrtc-screen-start', { detail: { userId } }))
     })
     socket.on('screen-share-stop', ({ userId }) => {
       setScreenSharer(null)
       addMessage({ type: 'system', content: `${userId} 停止屏幕共享`, id: Date.now().toString() })
+      // 通知 WebRTC 管理器清理视频元素
+      window.dispatchEvent(new CustomEvent('webrtc-screen-stop', { detail: { userId } }))
     })
 
     // 房间信息
