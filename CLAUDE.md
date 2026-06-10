@@ -130,21 +130,23 @@ server/src/
   const remoteStream = event.streams[0] || new MediaStream([event.track])
   ```
   切勿 `if (!remoteStream) return` 直接跳过 — 这会导致屏幕视频永远不渲染
-- **屏幕视频 CSS**：必须设置 `min-width` 和 `min-height`，否则视频 track 元数据加载前元素高度塌陷为 0（只剩一条边框线）
+- **屏幕视频 CSS 约束式尺寸**：使用 `max-width: 70vw` + `max-height: 75vh`（不是 `width`），让视频元素按 track 原生宽高比自适应，消除 letterboxing。**绝对不要**设置 `width` 固定宽度或 `object-fit: contain` — Chromium 合成器会在 letterbox 区域强制渲染黑色（CSS `background` 无法覆盖），产生黑色横杠/竖杠。同时需 `min-width: 300px` + `min-height: 200px` 防止元数据加载前塌陷
+- **屏幕视频延迟显示**：`opacity: 0` + `loadedmetadata` 事件 → `opacity: 1`（`transition: opacity 0.2s`），避免视频 track 数据到达前空框闪烁。切勿移除 `opacity: 0` 初始值 — 视频元数据可能延迟数百毫秒到达
 - **成员去重**：`useStore.addMember` 和 `setMembers` 按 `id` 去重
 - **音频持久化**：`micOnRef` / `speakerOnRef` 保持重连后开关状态
 - **AI API**：DeepSeek（`OPENAI_BASE_URL=https://api.deepseek.com/v1`，模型 `deepseek-chat`），`.env` 在 `.gitignore` 中
 
 ## 常见问题排查
 
-### 屏幕共享黑屏
+### 屏幕共享黑屏/黑杠
 1. **Console 检查 `ontrack` 日志**：确认 `[WebRTC] ontrack: VIDEO` 出现，并检查 `streamsCount` 和 `trackState`
 2. 如果 `streamsCount: 0` → `event.streams` 为空，确认降级方案 `new MediaStream([event.track])` 已生效
 3. 确认 `_handleOffer` 复用了已有 PC（检查 console 日志 `复用已有 PC 处理重协商`）
 4. 检查视频元素是否在 `document.body` 下且 `position: fixed` 未被遮挡
 5. 确认视频 track `readyState === 'live'`（console 日志会输出）
 6. 确认播放了：video 有 `muted` 属性且调用了 `play()`
-7. 如果视频元素存在但高度为 0（只剩一条紫色边框线），说明 `min-height` 缺失
+7. 如果视频元数据加载前元素不可见（`opacity: 0`），等待 `loadedmetadata` 事件触发 — console 会显示 `屏幕视频已挂载`
+8. **黑色横杠/竖杠（视频正在播放但周围有黑边）**：说明 CSS 使用了 `width` 固定宽度 + `object-fit: contain`，需改为 `max-width: 70vw` + `max-height: 75vh` 约束式尺寸，让元素匹配 track 原生宽高比。Chromium letterbox 区域是合成器层，CSS `background` 无法覆盖
 
 ### 登录/注册"操作失败"
 - 后端服务是否在 7897 端口运行
