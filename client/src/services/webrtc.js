@@ -103,38 +103,39 @@ class WebRTCManager {
     return this.localStream
   }
 
-  // 移动端重试获取麦克风（需要在用户手势中调用）
+  // 移动端重试获取麦克风（必须在用户手势中同步调用）
   async retryMic() {
     if (this.localStream) return this.localStream
     if (this._retryingMic) return this._retryingMic
 
-    this._retryingMic = (async () => {
-      try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        })
-        await this._setupAudioAnalyser('local', this.localStream)
-        this._startSpeakingDetection('local', this.localStream)
-        // 把音轨加到所有已有连接
-        for (const [peerId, pc] of this.peers) {
-          this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
-          try {
-            const offer = await pc.createOffer()
-            await pc.setLocalDescription(offer)
-            getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
-          } catch {}
-        }
-        console.log('[WebRTC] 麦克风重试成功')
-      } catch (err) {
-        console.warn('[WebRTC] 麦克风重试失败:', err.message)
-      } finally {
-        this._retryingMic = null
+    // 直接调用 getUserMedia（不用 async IIFE），iOS 要求 Promise 在用户手势栈中创建
+    const promise = navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    }).then(async (stream) => {
+      this.localStream = stream
+      await this._setupAudioAnalyser('local', this.localStream)
+      this._startSpeakingDetection('local', this.localStream)
+      for (const [peerId, pc] of this.peers) {
+        this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
+        try {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+        } catch {}
       }
+      console.log('[WebRTC] 麦克风重试成功')
       return this.localStream
-    })()
+    }).catch((err) => {
+      console.warn('[WebRTC] 麦克风重试失败:', err.message)
+      this._retryingMic = null
+      return null
+    }).finally(() => {
+      if (this._retryingMic === promise) this._retryingMic = null
+    })
 
-    return this._retryingMic
+    this._retryingMic = promise
+    return promise
   }
 
   // ==================== 信令事件处理 ====================

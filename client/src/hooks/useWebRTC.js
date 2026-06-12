@@ -125,16 +125,16 @@ export default function useWebRTC(roomId) {
     }
   }, [user?.id])
 
-  const toggleMic = useCallback(async () => {
+  const toggleMic = useCallback(() => {
     const manager = getWebRTCManager()
     if (!manager) return
-    // 如果没有本地流，优先获取（不管当前状态）
+    // 没有流：直接在点击事件里调用 getUserMedia（iOS 要求同步调用）
     if (!manager.localStream) {
-      const stream = await manager.retryMic()
-      if (stream) setMicOn(true)
+      manager.retryMic().then(stream => {
+        if (stream) setMicOn(true)
+      })
       return
     }
-    // 已有流，正常切换
     const next = !micOn
     setMicOn(next)
     manager.toggleMic(next)
