@@ -80,23 +80,24 @@ class WebRTCManager {
     window.addEventListener('webrtc-screen-start', this._boundScreenShareStart)
     window.addEventListener('webrtc-screen-stop', this._boundScreenShareStop)
 
-    // 尝试获取本地麦克风（移动端可能在无手势时失败，但不影响接收）
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      })
-
-      await this._setupAudioAnalyser('local', this.localStream)
-      this._startSpeakingDetection('local', this.localStream)
-      console.log('[WebRTC] 本地麦克风已就绪')
-    } catch (err) {
-      console.warn('[WebRTC] 本地麦克风不可用（仅接收模式）:', err.message)
-      this.localStream = null
+    // 不在初始化时获取麦克风 — 移动端必须由用户手势触发（点按钮）
+    // 桌面端可以尝试自动获取
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0
+    if (!isTouchDevice) {
+      try {
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        })
+        await this._setupAudioAnalyser('local', this.localStream)
+        this._startSpeakingDetection('local', this.localStream)
+        console.log('[WebRTC] 本地麦克风已就绪')
+      } catch (err) {
+        console.warn('[WebRTC] 本地麦克风不可用（仅接收模式）:', err.message)
+        this.localStream = null
+      }
+    } else {
+      console.log('[WebRTC] 移动端：跳过初始麦克风获取，等待用户点击按钮')
     }
 
     console.log('[WebRTC] 信令监听已就绪, 本地麦克风:', !!this.localStream)
