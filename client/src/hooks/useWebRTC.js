@@ -31,13 +31,13 @@ export default function useWebRTC(roomId) {
   const setSpeaking = useStore((s) => s.setSpeaking)
   const setScreenSharer = useStore((s) => s.setScreenSharer)
 
-  const [micOn, setMicOn] = useState(true)
+  const [micOn, setMicOn] = useState(false)  // 移动端初始为 false，点了按钮才获取麦克风
   const [speakerOn, setSpeakerOn] = useState(true)
   const [peerCount, setPeerCount] = useState(0)
   const [isSharing, setIsSharing] = useState(false)
   const [screenStream, setScreenStream] = useState(null)
   const audioEls = useRef(new Map())
-  const micOnRef = useRef(true)
+  const micOnRef = useRef(false)
   const speakerOnRef = useRef(true)
   micOnRef.current = micOn
   speakerOnRef.current = speakerOn
@@ -128,13 +128,16 @@ export default function useWebRTC(roomId) {
   const toggleMic = useCallback(async () => {
     const manager = getWebRTCManager()
     if (!manager) return
+    // 如果没有本地流，优先获取（不管当前状态）
+    if (!manager.localStream) {
+      const stream = await manager.retryMic()
+      if (stream) setMicOn(true)
+      return
+    }
+    // 已有流，正常切换
     const next = !micOn
     setMicOn(next)
-    if (next) {
-      await manager.retryMic()
-    } else {
-      manager.toggleMic(false)
-    }
+    manager.toggleMic(next)
   }, [micOn])
 
   const toggleSpeaker = useCallback(() => {
