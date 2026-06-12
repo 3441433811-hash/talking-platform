@@ -7,33 +7,35 @@ import {
 import { startScreenShare as notifyScreenShareStart, stopScreenShare as notifyScreenShareStop } from '../services/socket'
 import useStore from '../store/useStore'
 
-// 全局待播放音频队列 — 移动端必须等用户交互后才能 play()
-const pendingAudios = new Set()  // Set<HTMLAudioElement>
-let interactionHandlerReady = false
+// ── 移动端音频播放辅助 ──────────────────────────────────
+// 手机浏览器阻止自动播放，必须等用户手势触发 play()
+// iOS Safari 更严格：<audio> 走听筒，<video playsInline> 走扬声器
 
-function setupInteractionHandler() {
-  if (interactionHandlerReady) return
-  interactionHandlerReady = true
+const pendingAudios = new Set()
+let unlocked = false
 
-  const tryPlayAll = () => {
-    if (pendingAudios.size === 0) return
-    pendingAudios.forEach((audio) => {
-      if (audio.paused) {
-        audio.play().then(() => {
-          pendingAudios.delete(audio)
-        }).catch(() => {})
-      } else {
-        pendingAudios.delete(audio)
-      }
-    })
-  }
-
-  // 持久监听：每次用户交互都重试待播放音频
-  document.addEventListener('click', tryPlayAll)
-  document.addEventListener('touchstart', tryPlayAll, { passive: true })
+function unlockAudio() {
+  if (unlocked) return
+  unlocked = true
+  document.removeEventListener('click', unlockAudio)
+  document.removeEventListener('touchstart', unlockAudio)
 }
 
-setupInteractionHandler()
+// 全局：每次用户交互都重试播放
+document.addEventListener('click', () => {
+  unlockAudio()
+  pendingAudios.forEach((el) => {
+    if (el.paused) el.play().then(() => pendingAudios.delete(el)).catch(() => {})
+    else pendingAudios.delete(el)
+  })
+})
+document.addEventListener('touchstart', () => {
+  unlockAudio()
+  pendingAudios.forEach((el) => {
+    if (el.paused) el.play().then(() => pendingAudios.delete(el)).catch(() => {})
+    else pendingAudios.delete(el)
+  })
+}, { passive: true })
 
 export default function useWebRTC(roomId) {
   const user = useStore((s) => s.user)
@@ -62,21 +64,24 @@ export default function useWebRTC(roomId) {
       audioRefs.current.delete(peerId)
     }
 
-    const audio = new Audio()
-    audio.srcObject = stream
-    audio.dataset.peer = peerId
-    audio.playsInline = true
-    audio.muted = !speakerOnRef.current
-    document.body.appendChild(audio)
+    // 用 <video> 而不是 <audio>：iOS Safari 中 video+playsinline 走扬声器，audio 走听筒
+    const el = document.createElement('video')
+    el.srcObject = stream
+    el.dataset.peer = peerId
+    el.setAttribute('playsinline', '')
+    el.setAttribute('webkit-playsinline', '')
+    el.muted = !speakerOnRef.current
+    // 隐藏视频元素（只用于音频输出）
+    el.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;top:0;left:0'
+    document.body.appendChild(el)
 
-    // 尝试播放：移动端会被拒绝，加入待播放队列等用户交互
-    audio.play().then(() => {
-      pendingAudios.delete(audio)
+    el.play().then(() => {
+      pendingAudios.delete(el)
     }).catch(() => {
-      pendingAudios.add(audio)
+      pendingAudios.add(el)
     })
 
-    audioRefs.current.set(peerId, audio)
+    audioRefs.current.set(peerId, el)
   }, [])
 
   // 说话状态回调
@@ -113,7 +118,6 @@ export default function useWebRTC(roomId) {
         })
         await manager.start()
         if (!mounted) return
-        // 应用当前开关状态
         if (!micOnRef.current) manager.toggleMic(false)
         console.log('[useWebRTC] WebRTC 已初始化')
       } catch (err) {
@@ -125,33 +129,33 @@ export default function useWebRTC(roomId) {
 
     return () => {
       mounted = false
-      audioRefs.current.forEach((audio) => {
-        audio.srcObject = null
-        pendingAudios.delete(audio)
-        audio.remove()
+      audioRefs.current.forEach((el) => {
+        el.srcObject = null
+        pendingAudios.delete(el)
+        el.remove()
       })
       audioRefs.current.clear()
       destroyWebRTCManager()
     }
   }, [user?.id])
 
-  // 麦克风开关
   const toggleMic = useCallback(() => {
     const manager = getWebRTCManager()
-    const newState = !micOn
-    setMicOn(newState)
-    manager?.toggleMic(newState)
+    const next = !micOn
+    setMicOn(next)
+    manager?.toggleMic(next)
   }, [micOn])
 
-  // 扬声器开关
   const toggleSpeaker = useCallback(() => {
     const manager = getWebRTCManager()
-    const newState = !speakerOn
-    setSpeakerOn(newState)
-    manager?.toggleSpeaker(newState)
+    const next = !speakerOn
+    setSpeakerOn(next)
+    // 静音所有音频/视频播放元素
+    const els = document.querySelectorAll('[data-peer]')
+    els.forEach((el) => { el.muted = !next })
+    manager?.toggleSpeaker(next)
   }, [speakerOn])
 
-  // 屏幕共享开关
   const toggleScreenShare = useCallback(async () => {
     const manager = getWebRTCManager()
     if (!manager) return
@@ -161,7 +165,6 @@ export default function useWebRTC(roomId) {
       if (roomId) notifyScreenShareStop(roomId)
     } else {
       const stream = await manager.startScreenShare(() => {
-        // 用户通过浏览器 UI 停止共享时，通知远端
         if (roomId) notifyScreenShareStop(roomId)
       })
       if (stream && roomId) {

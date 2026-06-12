@@ -451,10 +451,10 @@ class WebRTCManager {
     })
   }
 
-  // 开关扬声器（静音所有远程音频元素）
+  // 开关扬声器（静音所有远程音频/视频元素）
   toggleSpeaker(enabled) {
-    const audioEls = document.querySelectorAll('audio[data-peer]')
-    audioEls.forEach((el) => {
+    const els = document.querySelectorAll('[data-peer]')
+    els.forEach((el) => {
       el.muted = !enabled
     })
   }
