@@ -46,6 +46,7 @@ class WebRTCManager {
     this.onScreenShare = onScreenShare            // 屏幕共享回调 (sharerUserId, stream, isLocal)
 
     this.localStream = null                       // 本地麦克风流
+    this._retryingMic = null                      // retryMic 防并发锁
     this.screenStream = null                      // 本地屏幕共享流
     this.isSharingScreen = false                  // 是否正在共享
     this.peers = new Map()                        // userId → RTCPeerConnection
@@ -105,27 +106,35 @@ class WebRTCManager {
   // 移动端重试获取麦克风（需要在用户手势中调用）
   async retryMic() {
     if (this.localStream) return this.localStream
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false,
-      })
-      await this._setupAudioAnalyser('local', this.localStream)
-      this._startSpeakingDetection('local', this.localStream)
-      // 把音轨加到所有已有连接
-      for (const [peerId, pc] of this.peers) {
-        this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
-        try {
-          const offer = await pc.createOffer()
-          await pc.setLocalDescription(offer)
-          getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
-        } catch {}
+    if (this._retryingMic) return this._retryingMic
+
+    this._retryingMic = (async () => {
+      try {
+        this.localStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        })
+        await this._setupAudioAnalyser('local', this.localStream)
+        this._startSpeakingDetection('local', this.localStream)
+        // 把音轨加到所有已有连接
+        for (const [peerId, pc] of this.peers) {
+          this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
+          try {
+            const offer = await pc.createOffer()
+            await pc.setLocalDescription(offer)
+            getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+          } catch {}
+        }
+        console.log('[WebRTC] 麦克风重试成功')
+      } catch (err) {
+        console.warn('[WebRTC] 麦克风重试失败:', err.message)
+      } finally {
+        this._retryingMic = null
       }
-      console.log('[WebRTC] 麦克风重试成功')
-    } catch (err) {
-      console.warn('[WebRTC] 麦克风重试失败:', err.message)
-    }
-    return this.localStream
+      return this.localStream
+    })()
+
+    return this._retryingMic
   }
 
   // ==================== 信令事件处理 ====================

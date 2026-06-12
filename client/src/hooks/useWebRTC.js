@@ -34,15 +34,9 @@ function resumePlaybackCtx() {
   }
 }
 
-// 任何用户交互都恢复 AudioContext + 重试麦克风
-document.addEventListener('click', () => {
-  resumePlaybackCtx()
-  getWebRTCManager()?.retryMic()
-})
-document.addEventListener('touchstart', () => {
-  resumePlaybackCtx()
-  getWebRTCManager()?.retryMic()
-}, { passive: true })
+// 任何用户交互都恢复 AudioContext（不在此处获取麦克风，由按钮触发）
+document.addEventListener('click', resumePlaybackCtx)
+document.addEventListener('touchstart', resumePlaybackCtx, { passive: true })
 
 export default function useWebRTC(roomId) {
   const user = useStore((s) => s.user)
@@ -145,11 +139,17 @@ export default function useWebRTC(roomId) {
     }
   }, [user?.id])
 
-  const toggleMic = useCallback(() => {
+  const toggleMic = useCallback(async () => {
     const manager = getWebRTCManager()
+    if (!manager) return
     const next = !micOn
     setMicOn(next)
-    manager?.toggleMic(next)
+    if (next) {
+      // 打开麦克风时尝试获取（移动端需要用户手势）
+      await manager.retryMic()
+    } else {
+      manager.toggleMic(false)
+    }
   }, [micOn])
 
   const toggleSpeaker = useCallback(() => {
