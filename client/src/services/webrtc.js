@@ -67,17 +67,10 @@ class WebRTCManager {
   // ==================== 初始化 ====================
 
   async start() {
-    // 获取本地麦克风
-    this.localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    })
-
-    // 监听信令事件
+    // ⚠️ 关键：先注册信令监听，再获取本地媒体。
+    // 手机浏览器（iOS Safari、部分安卓）禁止在无用户手势时调用 getUserMedia，
+    // 如果先等待 getUserMedia 再注册监听，信令事件（offer/answer/ICE）会被丢掉，
+    // 导致手机端无法接收任何远程音频/屏幕流。
     window.addEventListener('webrtc-offer', this._boundOffer)
     window.addEventListener('webrtc-answer', this._boundAnswer)
     window.addEventListener('webrtc-ice', this._boundIce)
@@ -86,13 +79,52 @@ class WebRTCManager {
     window.addEventListener('webrtc-screen-start', this._boundScreenShareStart)
     window.addEventListener('webrtc-screen-stop', this._boundScreenShareStop)
 
-    // 设置音频分析
-    await this._setupAudioAnalyser('local', this.localStream)
+    // 尝试获取本地麦克风（移动端可能在无手势时失败，但不影响接收）
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      })
 
-    // 检测本地说话状态
-    this._startSpeakingDetection('local', this.localStream)
+      await this._setupAudioAnalyser('local', this.localStream)
+      this._startSpeakingDetection('local', this.localStream)
+      console.log('[WebRTC] 本地麦克风已就绪')
+    } catch (err) {
+      console.warn('[WebRTC] 本地麦克风不可用（仅接收模式）:', err.message)
+      this.localStream = null
+    }
 
-    console.log('[WebRTC] 本地媒体已就绪')
+    console.log('[WebRTC] 信令监听已就绪, 本地麦克风:', !!this.localStream)
+    return this.localStream
+  }
+
+  // 移动端重试获取麦克风（需要在用户手势中调用）
+  async retryMic() {
+    if (this.localStream) return this.localStream
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      })
+      await this._setupAudioAnalyser('local', this.localStream)
+      this._startSpeakingDetection('local', this.localStream)
+      // 把音轨加到所有已有连接
+      for (const [peerId, pc] of this.peers) {
+        this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
+        try {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+        } catch {}
+      }
+      console.log('[WebRTC] 麦克风重试成功')
+    } catch (err) {
+      console.warn('[WebRTC] 麦克风重试失败:', err.message)
+    }
     return this.localStream
   }
 

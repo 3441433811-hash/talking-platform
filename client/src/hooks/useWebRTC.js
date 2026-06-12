@@ -34,9 +34,15 @@ function resumePlaybackCtx() {
   }
 }
 
-// 全局：任何用户交互都恢复 AudioContext（持久监听）
-document.addEventListener('click', resumePlaybackCtx)
-document.addEventListener('touchstart', resumePlaybackCtx, { passive: true })
+// 任何用户交互都恢复 AudioContext + 重试麦克风
+document.addEventListener('click', () => {
+  resumePlaybackCtx()
+  getWebRTCManager()?.retryMic()
+})
+document.addEventListener('touchstart', () => {
+  resumePlaybackCtx()
+  getWebRTCManager()?.retryMic()
+}, { passive: true })
 
 export default function useWebRTC(roomId) {
   const user = useStore((s) => s.user)
