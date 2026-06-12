@@ -5,10 +5,11 @@ import { sendAnswer, sendOffer, sendIceCandidate, getSocket } from './socket'
 
 const ICE_SERVERS = {
   iceServers: [
-    // Google STUN（NAT 类型检测 + 直连）
+    // Google STUN（NAT 类型检测 + 直连尝试）
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Metered.ca 免费 TURN（NAT 穿透失败时中继）
+    { urls: 'stun:stun2.l.google.com:19302' },
+    // Metered.ca 免费 TURN（全球多区域）
     {
       urls: [
         'turn:openrelay.metered.ca:80',
@@ -17,6 +18,16 @@ const ICE_SERVERS = {
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject',
+    },
+    // Twilio 免费 TURN（亚洲区域可用）
+    {
+      urls: [
+        'turn:global.turn.twilio.com:3478?transport=udp',
+        'turn:global.turn.twilio.com:3478?transport=tcp',
+        'turn:global.turn.twilio.com:443?transport=tcp',
+      ],
+      username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6ca97b50e6e3340a1bf4fca0f685',
+      credential: 'iMF4v7n0KJFJZmGbbrAqksGGQvWyL6PqIbMrAHSIbaY=',
     },
   ],
 }
