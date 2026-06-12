@@ -1,10 +1,12 @@
 import { io } from 'socket.io-client'
 
+const BACKEND_URL = import.meta.env.VITE_API_URL || ''
+
 let socket = null
 
 export function getSocket() {
   if (!socket) {
-    socket = io('/', {
+    socket = io(BACKEND_URL || undefined, {
       autoConnect: false,
       auth: (cb) => {
         cb({ token: localStorage.getItem('token') })
