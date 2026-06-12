@@ -3,7 +3,9 @@ const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
+const path = require('path')
 
+const db = require('./db')
 const authRoutes = require('./routes/auth')
 const roomRoutes = require('./routes/rooms')
 const { setupSocketAuth } = require('./middleware/auth')
@@ -17,6 +19,10 @@ const io = new Server(server, {
 })
 
 const PORT = process.env.PORT || 3001
+
+// 初始化数据库
+const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', 'voicehub.db')
+db.init(dbPath)
 
 // 中间件
 app.use(cors())
@@ -48,7 +54,13 @@ io.on('connection', (socket) => {
 
     // 记录房间成员
     if (!roomUsers.has(roomId)) roomUsers.set(roomId, new Set())
+    const wasEmpty = roomUsers.get(roomId).size === 0
     roomUsers.get(roomId).add(socket.id)
+
+    // 首次有用户加入时更新 DB 成员计数
+    if (wasEmpty) {
+      try { db.incrementMemberCount(roomId) } catch {}
+    }
 
     // 广播成员更新
     const members = []
@@ -90,7 +102,10 @@ function handleLeaveRoom(socket, roomId) {
   socket.leave(roomId)
   if (roomUsers.has(roomId)) {
     roomUsers.get(roomId).delete(socket.id)
-    if (roomUsers.get(roomId).size === 0) roomUsers.delete(roomId)
+    if (roomUsers.get(roomId).size === 0) {
+      roomUsers.delete(roomId)
+      try { db.decrementMemberCount(roomId) } catch {}
+    }
   }
 
   socket.to(roomId).emit('user-left', { userId: socket.data.userId })
