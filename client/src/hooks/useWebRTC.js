@@ -7,6 +7,34 @@ import {
 import { startScreenShare as notifyScreenShareStart, stopScreenShare as notifyScreenShareStop } from '../services/socket'
 import useStore from '../store/useStore'
 
+// 全局待播放音频队列 — 移动端必须等用户交互后才能 play()
+const pendingAudios = new Set()  // Set<HTMLAudioElement>
+let interactionHandlerReady = false
+
+function setupInteractionHandler() {
+  if (interactionHandlerReady) return
+  interactionHandlerReady = true
+
+  const tryPlayAll = () => {
+    if (pendingAudios.size === 0) return
+    pendingAudios.forEach((audio) => {
+      if (audio.paused) {
+        audio.play().then(() => {
+          pendingAudios.delete(audio)
+        }).catch(() => {})
+      } else {
+        pendingAudios.delete(audio)
+      }
+    })
+  }
+
+  // 持久监听：每次用户交互都重试待播放音频
+  document.addEventListener('click', tryPlayAll)
+  document.addEventListener('touchstart', tryPlayAll, { passive: true })
+}
+
+setupInteractionHandler()
+
 export default function useWebRTC(roomId) {
   const user = useStore((s) => s.user)
   const setSpeaking = useStore((s) => s.setSpeaking)
@@ -25,23 +53,29 @@ export default function useWebRTC(roomId) {
 
   // 远程音频流到达
   const handleRemoteStream = useCallback((peerId, stream) => {
+    // 清理旧元素
     const old = audioRefs.current.get(peerId)
-    if (old) { old.srcObject = null; old.remove(); audioRefs.current.delete(peerId) }
+    if (old) {
+      old.srcObject = null
+      pendingAudios.delete(old)
+      old.remove()
+      audioRefs.current.delete(peerId)
+    }
 
     const audio = new Audio()
     audio.srcObject = stream
     audio.dataset.peer = peerId
-    audio.autoplay = true
+    audio.playsInline = true
     audio.muted = !speakerOnRef.current
     document.body.appendChild(audio)
-    // 尝试播放，失败则等待用户交互
-    audio.play().catch(() => {
-      const resume = () => {
-        audio.play().catch(() => {})
-        document.removeEventListener('click', resume)
-      }
-      document.addEventListener('click', resume, { once: true })
+
+    // 尝试播放：移动端会被拒绝，加入待播放队列等用户交互
+    audio.play().then(() => {
+      pendingAudios.delete(audio)
+    }).catch(() => {
+      pendingAudios.add(audio)
     })
+
     audioRefs.current.set(peerId, audio)
   }, [])
 
@@ -93,6 +127,7 @@ export default function useWebRTC(roomId) {
       mounted = false
       audioRefs.current.forEach((audio) => {
         audio.srcObject = null
+        pendingAudios.delete(audio)
         audio.remove()
       })
       audioRefs.current.clear()

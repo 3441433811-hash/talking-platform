@@ -465,6 +465,22 @@ class WebRTCManager {
     try {
       if (!this.audioContext) {
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)()
+        // 移动端 AudioContext 默认 suspended，需用户手势恢复
+        if (this.audioContext.state === 'suspended') {
+          const resume = () => {
+            this.audioContext?.resume().catch(() => {})
+            if (this.audioContext?.state === 'running') {
+              document.removeEventListener('click', resume)
+              document.removeEventListener('touchstart', resume)
+            }
+          }
+          document.addEventListener('click', resume)
+          document.addEventListener('touchstart', resume, { passive: true })
+        }
+      }
+      // 如果 AudioContext 仍 suspended（尚未有用户手势），等待 resume
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume().catch(() => {})
       }
       const source = this.audioContext.createMediaStreamSource(stream)
       const analyser = this.audioContext.createAnalyser()
