@@ -1,21 +1,22 @@
-// SQLite 持久化层 — 替代内存数组存储
-// 使用 better-sqlite3（同步 API，简单可靠）
+// PostgreSQL 持久化层 — 替代内存数组存储
+// 使用 pg (node-postgres)，连接 Neon / Supabase / Railway PG 等
 
-const Database = require('better-sqlite3')
-const path = require('path')
+const { Pool } = require('pg')
 
-let db = null
+let pool = null
 
-function init(dbPath) {
-  const resolvedPath = dbPath || path.join(__dirname, '..', 'voicehub.db')
-  db = new Database(resolvedPath)
+function init(databaseUrl) {
+  const url = databaseUrl || process.env.DATABASE_URL
+  if (!url) throw new Error('DATABASE_URL 未设置，无法连接数据库')
 
-  // 开启 WAL 模式，支持并发读
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
+  pool = new Pool({
+    connectionString: url,
+    max: 10,
+    idleTimeoutMillis: 30000,
+  })
 
-  // 建表
-  db.exec(`
+  // 启动时建表
+  return pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL,
@@ -51,128 +52,131 @@ function init(dbPath) {
       room_id TEXT PRIMARY KEY,
       messages_json TEXT NOT NULL
     );
-  `)
-
-  console.log('[DB] SQLite 已初始化:', resolvedPath)
-  return db
+  `).then(() => {
+    console.log('[DB] PostgreSQL 已连接')
+  }).catch((err) => {
+    console.error('[DB] 连接失败:', err.message)
+    throw err
+  })
 }
 
-function getDb() {
-  if (!db) throw new Error('DB 未初始化，请先调用 init()')
-  return db
+function getPool() {
+  if (!pool) throw new Error('DB 未初始化，请先调用 init()')
+  return pool
 }
 
 // ==================== Users ====================
 
-function createUser({ id, username, email, passwordHash, createdAt }) {
-  const stmt = getDb().prepare(
-    'INSERT INTO users (id, username, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)'
+async function createUser({ id, username, email, passwordHash, createdAt }) {
+  await getPool().query(
+    'INSERT INTO users (id, username, email, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)',
+    [id, username, email, passwordHash, createdAt]
   )
-  stmt.run(id, username, email, passwordHash, createdAt)
   return { id, username, email, createdAt }
 }
 
-function getUserByEmail(email) {
-  return getDb().prepare('SELECT * FROM users WHERE email = ?').get(email) || null
+async function getUserByEmail(email) {
+  const res = await getPool().query('SELECT * FROM users WHERE email = $1', [email])
+  return res.rows[0] || null
 }
 
-function getUserById(id) {
-  return getDb().prepare('SELECT * FROM users WHERE id = ?').get(id) || null
+async function getUserById(id) {
+  const res = await getPool().query('SELECT * FROM users WHERE id = $1', [id])
+  return res.rows[0] || null
 }
 
 // ==================== Rooms ====================
 
-function createRoom({ id, name, passwordHash, maxUsers, ownerId, createdAt }) {
-  const stmt = getDb().prepare(
-    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)'
+async function createRoom({ id, name, passwordHash, maxUsers, ownerId, createdAt }) {
+  await getPool().query(
+    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at) VALUES ($1, $2, $3, $4, $5, 0, $6)',
+    [id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt]
   )
-  stmt.run(id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt)
   return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt }
 }
 
-function getRoomById(id) {
-  return getDb().prepare('SELECT * FROM rooms WHERE id = ?').get(id) || null
+async function getRoomById(id) {
+  const res = await getPool().query('SELECT * FROM rooms WHERE id = $1', [id])
+  return res.rows[0] || null
 }
 
-function getAllRooms() {
-  return getDb().prepare('SELECT * FROM rooms ORDER BY created_at DESC').all()
+async function getAllRooms() {
+  const res = await getPool().query('SELECT * FROM rooms ORDER BY created_at DESC')
+  return res.rows
 }
 
-function deleteRoomById(id) {
-  return getDb().prepare('DELETE FROM rooms WHERE id = ?').run(id)
+async function deleteRoomById(id) {
+  await getPool().query('DELETE FROM rooms WHERE id = $1', [id])
 }
 
-function incrementMemberCount(roomId) {
-  getDb().prepare('UPDATE rooms SET member_count = member_count + 1 WHERE id = ?').run(roomId)
+async function incrementMemberCount(roomId) {
+  await getPool().query('UPDATE rooms SET member_count = member_count + 1 WHERE id = $1', [roomId])
 }
 
-function decrementMemberCount(roomId) {
-  getDb().prepare('UPDATE rooms SET member_count = MAX(0, member_count - 1) WHERE id = ?').run(roomId)
+async function decrementMemberCount(roomId) {
+  await getPool().query('UPDATE rooms SET member_count = GREATEST(0, member_count - 1) WHERE id = $1', [roomId])
 }
 
 // ==================== Messages ====================
 
-function createMessage({ id, roomId, userId, username, type, content, createdAt }) {
-  const stmt = getDb().prepare(
-    'INSERT INTO messages (id, room_id, user_id, username, type, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+async function createMessage({ id, roomId, userId, username, type, content, createdAt }) {
+  await getPool().query(
+    'INSERT INTO messages (id, room_id, user_id, username, type, content, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [id, roomId, userId || null, username || null, type || 'text', content, createdAt]
   )
-  stmt.run(id, roomId, userId || null, username || null, type || 'text', content, createdAt)
   return { id, roomId, userId, username, type, content, createdAt }
 }
 
-function getMessagesByRoomId(roomId, limit = 50) {
-  return getDb()
-    .prepare('SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC LIMIT ?')
-    .all(roomId, limit)
-    .reverse()
+async function getMessagesByRoomId(roomId, limit = 50) {
+  const res = await getPool().query(
+    'SELECT * FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2',
+    [roomId, limit]
+  )
+  return res.rows.reverse()
 }
 
 // ==================== AI Context ====================
 
-function getAIContext(roomId) {
-  const row = getDb().prepare('SELECT messages_json FROM ai_context WHERE room_id = ?').get(roomId)
-  return row ? JSON.parse(row.messages_json) : null
+async function getAIContext(roomId) {
+  const res = await getPool().query('SELECT messages_json FROM ai_context WHERE room_id = $1', [roomId])
+  return res.rows[0] ? JSON.parse(res.rows[0].messages_json) : null
 }
 
-function setAIContext(roomId, messages) {
-  const stmt = getDb().prepare(
-    'INSERT OR REPLACE INTO ai_context (room_id, messages_json) VALUES (?, ?)'
+async function setAIContext(roomId, messages) {
+  await getPool().query(
+    'INSERT INTO ai_context (room_id, messages_json) VALUES ($1, $2) ON CONFLICT (room_id) DO UPDATE SET messages_json = $2',
+    [roomId, JSON.stringify(messages)]
   )
-  stmt.run(roomId, JSON.stringify(messages))
 }
 
-function deleteAIContext(roomId) {
-  getDb().prepare('DELETE FROM ai_context WHERE room_id = ?').run(roomId)
+async function deleteAIContext(roomId) {
+  await getPool().query('DELETE FROM ai_context WHERE room_id = $1', [roomId])
 }
 
 // ==================== 关闭 ====================
 
-function close() {
-  if (db) {
-    db.close()
-    db = null
+async function close() {
+  if (pool) {
+    await pool.end()
+    pool = null
   }
 }
 
 module.exports = {
   init,
-  getDb,
+  getPool,
   close,
-  // users
   createUser,
   getUserByEmail,
   getUserById,
-  // rooms
   createRoom,
   getRoomById,
   getAllRooms,
   deleteRoomById,
   incrementMemberCount,
   decrementMemberCount,
-  // messages
   createMessage,
   getMessagesByRoomId,
-  // ai context
   getAIContext,
   setAIContext,
   deleteAIContext,

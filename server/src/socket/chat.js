@@ -18,9 +18,9 @@ const DEFAULT_SYSTEM_PROMPT = `你是一个语音聊天室中的 AI 助手，名
 5. 不要编造你不知道的信息`
 
 // 从 DB 加载指定房间的 AI 上下文到内存缓存
-function loadAIContext(roomId) {
+async function loadAIContext(roomId) {
   if (aiContexts.has(roomId)) return
-  const saved = db.getAIContext(roomId)
+  const saved = await db.getAIContext(roomId)
   if (saved) {
     aiContexts.set(roomId, saved)
   } else {
@@ -31,26 +31,30 @@ function loadAIContext(roomId) {
 }
 
 // 持久化 AI 上下文到 DB
-function saveAIContext(roomId) {
+async function saveAIContext(roomId) {
   const ctx = aiContexts.get(roomId)
   if (ctx) {
-    db.setAIContext(roomId, ctx)
+    await db.setAIContext(roomId, ctx)
   }
 }
 
 function setupChat(io, socket, roomUsers) {
   // ==================== 公屏消息 ====================
-  socket.on('send-message', ({ roomId, content, type = 'text' }) => {
-    const msg = db.createMessage({
-      id: uuidv4(),
-      roomId,
-      userId: socket.data.userId,
-      username: socket.user?.username || '未知用户',
-      type,
-      content,
-      createdAt: new Date().toISOString(),
-    })
-    io.to(roomId).emit('new-message', msg)
+  socket.on('send-message', async ({ roomId, content, type = 'text' }) => {
+    try {
+      const msg = await db.createMessage({
+        id: uuidv4(),
+        roomId,
+        userId: socket.data.userId,
+        username: socket.user?.username || '未知用户',
+        type,
+        content,
+        createdAt: new Date().toISOString(),
+      })
+      io.to(roomId).emit('new-message', msg)
+    } catch (err) {
+      console.error('[Chat] 保存消息失败:', err.message)
+    }
   })
 
   // ==================== AI 对话（流式） ====================
@@ -64,8 +68,8 @@ function setupChat(io, socket, roomUsers) {
     // 处理特殊命令
     if (content.trim() === '/clear') {
       aiContexts.set(roomId, [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT }])
-      db.deleteAIContext(roomId)
-      const sysMsg = db.createMessage({
+      await db.deleteAIContext(roomId)
+      const sysMsg = await db.createMessage({
         id: uuidv4(), roomId, type: 'system',
         content: '🧹 AI 上下文已清除，开始全新对话',
         createdAt: new Date().toISOString(),
@@ -75,7 +79,7 @@ function setupChat(io, socket, roomUsers) {
     }
 
     if (content.trim() === '/help') {
-      const helpMsg = db.createMessage({
+      const helpMsg = await db.createMessage({
         id: uuidv4(), roomId, type: 'ai',
         content: '📖 **AI 命令帮助**\n• `@AI 你的问题` — 向 AI 提问\n• `@AI /clear` — 清除对话上下文\n• `@AI /help` — 显示此帮助',
         username: '小V', createdAt: new Date().toISOString(),
@@ -85,7 +89,7 @@ function setupChat(io, socket, roomUsers) {
     }
 
     // 发送用户消息（持久化）
-    const userMsg = db.createMessage({
+    const userMsg = await db.createMessage({
       id: uuidv4(), roomId,
       userId: socket.data.userId,
       type: 'text',
@@ -100,7 +104,7 @@ function setupChat(io, socket, roomUsers) {
     io.to(roomId).emit('ai-typing', { id: aiMsgId, typing: true })
 
     // 加载 AI 上下文（首次从 DB 加载）
-    loadAIContext(roomId)
+    await loadAIContext(roomId)
     const ctx = aiContexts.get(roomId)
     ctx.push({ role: 'user', content })
 
@@ -115,13 +119,13 @@ function setupChat(io, socket, roomUsers) {
       // 保存对话历史
       ctx.push({ role: 'assistant', content: fullReply })
       if (ctx.length > 21) ctx.splice(1, 2) // 保留系统提示 + 最近10轮
-      saveAIContext(roomId)
+      await saveAIContext(roomId)
 
       // 通知 AI 完成
       io.to(roomId).emit('ai-done', { id: aiMsgId, content: fullReply })
 
       // 保存完整 AI 回复
-      db.createMessage({
+      await db.createMessage({
         id: aiMsgId, roomId, type: 'ai',
         content: fullReply,
         username: '小V', createdAt: new Date().toISOString(),
@@ -134,9 +138,9 @@ function setupChat(io, socket, roomUsers) {
   })
 
   // ==================== AI 开关 ====================
-  socket.on('toggle-ai', ({ roomId, enabled }) => {
+  socket.on('toggle-ai', async ({ roomId, enabled }) => {
     aiEnabledMap.set(roomId, enabled)
-    const msg = db.createMessage({
+    const msg = await db.createMessage({
       id: uuidv4(), roomId, type: 'system',
       content: enabled ? '🤖 AI 助手已开启（@AI 提问）' : '🤖 AI 助手已关闭',
       createdAt: new Date().toISOString(),
@@ -170,7 +174,7 @@ async function callAIStream(messages, onChunk) {
       model: process.env.OPENAI_MODEL || 'deepseek-chat',
       messages,
       max_tokens: 500,
-      stream: true,           // 启用流式输出
+      stream: true,
       temperature: 0.7,
     }),
   })

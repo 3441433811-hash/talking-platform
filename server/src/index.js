@@ -3,7 +3,6 @@ const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
-const path = require('path')
 
 const db = require('./db')
 const authRoutes = require('./routes/auth')
@@ -21,8 +20,12 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3001
 
 // 初始化数据库
-const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', 'voicehub.db')
-db.init(dbPath)
+db.init().then(() => {
+  console.log('[Server] 数据库已就绪')
+}).catch((err) => {
+  console.error('[Server] 数据库初始化失败:', err.message)
+  process.exit(1)
+})
 
 // 中间件
 app.use(cors())
@@ -59,7 +62,7 @@ io.on('connection', (socket) => {
 
     // 首次有用户加入时更新 DB 成员计数
     if (wasEmpty) {
-      try { db.incrementMemberCount(roomId) } catch {}
+      db.incrementMemberCount(roomId).catch(() => {})
     }
 
     // 广播成员更新
@@ -104,7 +107,7 @@ function handleLeaveRoom(socket, roomId) {
     roomUsers.get(roomId).delete(socket.id)
     if (roomUsers.get(roomId).size === 0) {
       roomUsers.delete(roomId)
-      try { db.decrementMemberCount(roomId) } catch {}
+      db.decrementMemberCount(roomId).catch(() => {})
     }
   }
 

@@ -14,14 +14,15 @@ router.post('/register', async (req, res) => {
     if (!username || !email || !password) {
       return res.status(400).json({ message: '请填写所有字段' })
     }
-    if (db.getUserByEmail(email)) {
+    const existing = await db.getUserByEmail(email)
+    if (existing) {
       return res.status(400).json({ message: '该邮箱已注册' })
     }
 
     const hash = await bcrypt.hash(password, 10)
     const id = uuidv4()
     const createdAt = new Date().toISOString()
-    const user = db.createUser({ id, username, email, passwordHash: hash, createdAt })
+    const user = await db.createUser({ id, username, email, passwordHash: hash, createdAt })
 
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' })
     res.json({ token, user: { id: user.id, username: user.username, email: user.email } })
@@ -35,7 +36,7 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body
-    const user = db.getUserByEmail(email)
+    const user = await db.getUserByEmail(email)
     if (!user) return res.status(400).json({ message: '邮箱或密码错误' })
 
     const valid = await bcrypt.compare(password, user.password_hash)
@@ -50,10 +51,14 @@ router.post('/login', async (req, res) => {
 })
 
 // 当前用户信息
-router.get('/me', authMiddleware, (req, res) => {
-  const user = db.getUserById(req.user.id)
-  if (!user) return res.status(404).json({ message: '用户不存在' })
-  res.json({ user: { id: user.id, username: user.username, email: user.email } })
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await db.getUserById(req.user.id)
+    if (!user) return res.status(404).json({ message: '用户不存在' })
+    res.json({ user: { id: user.id, username: user.username, email: user.email } })
+  } catch (err) {
+    res.status(500).json({ message: '服务器错误' })
+  }
 })
 
 module.exports = router
