@@ -35,7 +35,7 @@ export default function Lobby() {
   }
 
   const handleRoomClick = (room) => {
-    if (!room.isPublic && room.hasAccessCode) {
+    if (room.hasPassword || (!room.isPublic && room.hasAccessCode)) {
       setJoinModal(room)
       setJoinCode('')
       setJoinError('')
@@ -48,8 +48,12 @@ export default function Lobby() {
     e.preventDefault()
     if (!joinCode.trim()) return
     try {
-      await joinRoom(joinModal.id, joinCode)
-      navigate(`/room/${joinModal.id}`, { state: { accessCode: joinCode } })
+      // hasPassword 房间用 password，access_code 房间用 accessCode
+      const body = joinModal.hasPassword
+        ? { password: joinCode }
+        : { accessCode: joinCode }
+      await joinRoom(joinModal.id, body)
+      navigate(`/room/${joinModal.id}`, { state: { code: joinCode } })
     } catch (err) {
       setJoinError(err.response?.data?.message || '验证失败')
     }
@@ -122,9 +126,9 @@ export default function Lobby() {
         {joinModal && (
           <div style={styles.modalOverlay} onClick={() => setJoinModal(null)}>
             <form style={styles.modal} onClick={(e) => e.stopPropagation()} onSubmit={handleJoinSubmit}>
-              <h3>🔒 加入私密房间</h3>
+              <h3>{joinModal.hasPassword ? '🔒 需要密码' : '🔒 加入私密房间'}</h3>
               <p style={styles.modalRoomName}>{joinModal.name}</p>
-              <input style={styles.input} placeholder="输入房间访问码" autoFocus
+              <input style={styles.input} placeholder={joinModal.hasPassword ? '输入房间密码' : '输入房间访问码'} autoFocus
                 value={joinCode} onChange={(e) => { setJoinCode(e.target.value); setJoinError('') }} />
               {joinError && <p style={styles.error}>{joinError}</p>}
               <div style={styles.modalBtns}>

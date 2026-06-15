@@ -10,8 +10,8 @@ export default function Room() {
   const { id: roomId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const accessCode = location.state?.accessCode
-  useSocket(roomId, accessCode)
+  const roomCode = location.state?.code
+  useSocket(roomId, roomCode)
   const { micOn, speakerOn, peerCount, isSharing, toggleMic, toggleSpeaker, toggleScreenShare } = useWebRTC(roomId)
 
   const {

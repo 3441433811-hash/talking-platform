@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { connectSocket, disconnectSocket, getSocket } from '../services/socket'
 import useStore from '../store/useStore'
 
-export default function useSocket(roomId, accessCode) {
+export default function useSocket(roomId, code) {
   const {
     setMembers,
     addMember,
@@ -19,7 +19,7 @@ export default function useSocket(roomId, accessCode) {
     const emitJoin = () => {
       if (roomId) {
         const user = useStore.getState().user
-        socket.emit('join-room', { roomId, userId: user?.id, accessCode })
+        socket.emit('join-room', { roomId, userId: user?.id, code })
       }
     }
     socket.on('connect', () => {

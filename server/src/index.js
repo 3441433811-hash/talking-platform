@@ -3,6 +3,7 @@ const express = require('express')
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
+const bcrypt = require('bcryptjs')
 
 const db = require('./db')
 const authRoutes = require('./routes/auth')
@@ -50,16 +51,29 @@ io.on('connection', (socket) => {
   console.log(`[Socket] 用户连接: ${socket.id} (${socket.user?.username})`)
 
   // 加入房间（语音 + 信令）
-  socket.on('join-room', async ({ roomId, userId, accessCode }) => {
-    // 访问控制：检查房间是否存在、私密房间需要 access_code
+  socket.on('join-room', async ({ roomId, userId, code }) => {
+    // 访问控制：检查房间是否存在、密码/访问码
     try {
       const room = await db.getRoomById(roomId)
       if (!room) {
         socket.emit('error-msg', { message: '房间不存在' })
         return
       }
+      // 密码保护房间
+      if (room.password_hash) {
+        if (!code) {
+          socket.emit('error-msg', { message: '请输入房间密码' })
+          return
+        }
+        const valid = await bcrypt.compare(code, room.password_hash)
+        if (!valid) {
+          socket.emit('error-msg', { message: '房间密码错误' })
+          return
+        }
+      }
+      // 私密房间需要 access_code
       if (room.is_public === false && room.access_code) {
-        if (!accessCode || accessCode !== room.access_code) {
+        if (!code || code !== room.access_code) {
           socket.emit('error-msg', { message: '房间访问码错误' })
           return
         }
