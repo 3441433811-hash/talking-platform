@@ -113,22 +113,29 @@ class WebRTCManager {
     const promise = navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
-    }).then(async (stream) => {
+    }).then((stream) => {
       this.localStream = stream
-      await this._setupAudioAnalyser('local', this.localStream)
-      this._startSpeakingDetection('local', this.localStream)
+      // _setupAudioAnalyser 不再 await resume，不会阻塞
+      this._setupAudioAnalyser('local', stream)
+      this._startSpeakingDetection('local', stream)
+      // peer 重协商不阻塞 Promise 链，避免 setMicOn(true) 迟迟不触发
       for (const [peerId, pc] of this.peers) {
-        this.localStream.getTracks().forEach((t) => pc.addTrack(t, this.localStream))
-        try {
-          const offer = await pc.createOffer()
-          await pc.setLocalDescription(offer)
-          getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
-        } catch {}
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream))
+        pc.createOffer().then((offer) =>
+          pc.setLocalDescription(offer).then(() =>
+            getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+          )
+        ).catch((err) => {
+          console.warn('[WebRTC] 重协商失败:', peerId, err.message)
+        })
       }
       console.log('[WebRTC] 麦克风重试成功')
       return this.localStream
     }).catch((err) => {
       console.warn('[WebRTC] 麦克风重试失败:', err.message)
+      if (err.name === 'NotAllowedError') {
+        alert('无法访问麦克风。请在浏览器设置中允许麦克风权限，然后刷新页面。')
+      }
       this._retryingMic = null
       return null
     }).finally(() => {
@@ -532,9 +539,11 @@ class WebRTCManager {
           document.addEventListener('touchstart', resume, { passive: true })
         }
       }
-      // 如果 AudioContext 仍 suspended（尚未有用户手势），等待 resume
+      // 移动端 AudioContext 默认 suspended，非手势上下文 resume() 可能永不 resolve
+      // 不 await，跳过 analyser 创建（说话检测非核心功能，不能阻塞音频）
       if (this.audioContext.state === 'suspended') {
-        await this.audioContext.resume().catch(() => {})
+        this.audioContext.resume().catch(() => {})
+        return
       }
       const source = this.audioContext.createMediaStreamSource(stream)
       const analyser = this.audioContext.createAnalyser()

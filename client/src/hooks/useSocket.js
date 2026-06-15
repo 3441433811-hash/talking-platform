@@ -16,13 +16,18 @@ export default function useSocket(roomId) {
   useEffect(() => {
     const socket = connectSocket()
 
-    socket.on('connect', () => {
-      console.log('[Socket] connected:', socket.id)
+    const emitJoin = () => {
       if (roomId) {
         const user = useStore.getState().user
         socket.emit('join-room', { roomId, userId: user?.id })
       }
+    }
+    socket.on('connect', () => {
+      console.log('[Socket] connected:', socket.id)
+      emitJoin()
     })
+    // 已连接时直接发送（刷新页面、从大厅进入房间等场景）
+    if (socket.connected) emitJoin()
 
     // 信令转发
     socket.on('offer', (data) => {

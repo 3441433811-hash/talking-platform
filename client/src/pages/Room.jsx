@@ -25,6 +25,14 @@ export default function Room() {
   const [voiceText, setVoiceText] = useState('')
   const [ttsMuted, setTtsMuted] = useState(false)
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [mobileTab, setMobileTab] = useState('main') // 'members' | 'main' | 'chat'
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   const chatEndRef = useRef(null)
   const voicePendingRef = useRef(false)
   const recognitionRef = useRef(null)
@@ -174,6 +182,157 @@ export default function Room() {
     setAiEnabled(enabled)
     getSocket()?.emit('toggle-ai', { roomId, enabled })
   }
+
+  if (isMobile) {
+    return (
+      <div style={styles.mobileWrapper}>
+        {/* 顶部栏 */}
+        <header style={styles.mobileTopBar}>
+          <span style={styles.mobileRoomName}>📻 {currentRoom?.name || '房间'}</span>
+          <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
+        </header>
+
+        {/* Tab 切换 */}
+        <div style={styles.mobileTabs}>
+          {['members','main','chat'].map(tab => (
+            <button key={tab} style={{
+              ...styles.mobileTab,
+              ...(mobileTab === tab ? styles.mobileTabActive : {}),
+            }} onClick={() => setMobileTab(tab)}>
+              {tab === 'members' ? `👥 成员(${members.length})` : tab === 'main' ? '🎙️ 通话' : '💬 聊天'}
+            </button>
+          ))}
+        </div>
+
+        {/* 内容区 */}
+        <div style={styles.mobileContent}>
+          {mobileTab === 'members' && (
+            <div style={styles.mobilePanel}>
+              {members.map((m) => (
+                <div key={m.id} style={styles.member}>
+                  <span>{m.speaking ? '🟢' : '⚪'}</span>
+                  <span>{m.username || m.id?.slice(0, 6)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {mobileTab === 'main' && (
+            <div style={{ ...styles.mobilePanel, ...styles.mobileMain }}>
+              {isSharing || screenSharer ? (
+                <div style={styles.placeholder}>
+                  <span style={{ fontSize: 48 }}>📺</span>
+                  <p style={{ color: '#6c63ff', marginTop: 8 }}>
+                    {isSharing ? '你正在共享屏幕' : `${screenSharer} 正在共享屏幕`}
+                  </p>
+                </div>
+              ) : voiceAiOn ? (
+                // 语音 AI 面板（简化版，同桌面端逻辑）
+                <div style={styles.voiceAiPanel}>
+                  {voiceListening ? (
+                    <>
+                      <div style={styles.voiceMicIcon}>🎤</div>
+                      <p style={styles.voiceLabel}>正在听...</p>
+                      {voiceText && <p style={styles.voiceLiveText}>{voiceText}</p>}
+                    </>
+                  ) : aiTyping && voicePendingRef.current ? (
+                    <>
+                      <div style={styles.voiceMicIcon}>🤔</div>
+                      <p style={styles.voiceLabel}>思考中...</p>
+                      {aiStreamContent && <p style={styles.voiceLiveText}>{aiStreamContent}</p>}
+                    </>
+                  ) : voiceSpeaking ? (
+                    <>
+                      <div style={styles.voiceMicIcon}>🔊</div>
+                      <p style={styles.voiceLabel}>AI 正在说...</p>
+                    </>
+                  ) : (
+                    <>
+                      <div style={styles.voiceMicIcon}>🤖</div>
+                      <p style={styles.voiceLabel}>语音 AI 已开启</p>
+                      <p style={styles.voiceHint}>对着麦克风说话</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div style={styles.placeholder}>
+                  <span style={{ fontSize: 48 }}>🎙️</span>
+                  <p>语音通话中 · {members.length} 人</p>
+                  <p style={{ color: '#a0a0b8', fontSize: 13, marginTop: 4 }}>🔗 {peerCount}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mobileTab === 'chat' && (
+            <div style={styles.mobilePanel}>
+              <div style={styles.mobileChatMsgs}>
+                {messages.map((msg, i) => (
+                  <div key={msg.id || i} style={{
+                    ...styles.msgItem,
+                    ...(msg.type === 'system' ? styles.msgSystem : {}),
+                    ...(msg.type === 'ai' ? styles.msgAi : {}),
+                  }}>
+                    {msg.username && <strong style={{
+                      ...styles.msgUser,
+                      ...(msg.type === 'ai' ? styles.aiUser : {}),
+                    }}>{msg.username}: </strong>}
+                    {msg.content}
+                  </div>
+                ))}
+                {aiTyping && aiStreamContent && (
+                  <div style={styles.msgAi}>
+                    <strong style={{ ...styles.msgUser, ...styles.aiUser }}>🤖 小V: </strong>
+                    <span>{aiStreamContent}</span><span style={styles.cursor}>|</span>
+                  </div>
+                )}
+                {aiTyping && !aiStreamContent && (
+                  <div style={styles.msgAi}>
+                    <strong style={{ ...styles.msgUser, ...styles.aiUser }}>🤖 小V: </strong>
+                    <span style={styles.typingDots}>思考中...</span>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+              <form style={styles.chatInput} onSubmit={handleSend}>
+                <input style={styles.msgInput} value={input} onChange={(e) => setInput(e.target.value)}
+                  placeholder={aiEnabled ? '发消息 或 @AI 提问...' : '输入消息...'} />
+                <button style={styles.sendBtn} type="submit">发送</button>
+              </form>
+            </div>
+          )}
+        </div>
+
+        {/* 底部控制栏 */}
+        <footer style={styles.mobileControlBar}>
+          <button style={{ ...styles.mobileCtrlBtn, background: micOn ? 'rgba(255,255,255,0.1)' : '#ff4757' }}
+            onClick={toggleMic}>
+            {micOn ? '🎤' : '🔇'}
+          </button>
+          <button style={{ ...styles.mobileCtrlBtn, background: speakerOn ? 'rgba(255,255,255,0.1)' : '#ff4757' }}
+            onClick={toggleSpeaker}>
+            {speakerOn ? '🔊' : '🔇'}
+          </button>
+          <button style={{
+            ...styles.mobileCtrlBtn,
+            background: voiceAiOn ? '#6c63ff' : 'rgba(255,255,255,0.08)',
+            fontSize: 13, fontWeight: 600, width: 'auto', padding: '0 14px',
+          }} onClick={toggleVoiceAI}>
+            🤖 {voiceAiOn ? 'AI开' : 'AI'}
+          </button>
+          {voiceAiOn && (
+            <button style={{ ...styles.mobileCtrlBtn, background: ttsMuted ? '#ff4757' : 'rgba(255,255,255,0.08)', fontSize: 16 }}
+              onClick={() => setTtsMuted(!ttsMuted)}>
+              {ttsMuted ? '🔇' : '🔊'}
+            </button>
+          )}
+          <span style={styles.mobilePeerBadge}>🔗 {peerCount}</span>
+        </footer>
+      </div>
+    )
+  }
+
+  // ==================== 桌面端布局 ====================
 
   return (
     <div style={styles.wrapper}>
@@ -386,4 +545,18 @@ const styles = {
   voiceHint: { color: '#6b6b80', fontSize: 14 },
   voiceLiveText: { color: '#00d4ff', fontSize: 16, maxWidth: 400, lineHeight: 1.5, minHeight: 24, fontStyle: 'italic' },
   voiceSpeakBar: { width: 200, height: 4, background: '#6c63ff', borderRadius: 2, opacity: 0.8 },
+  // 移动端样式
+  mobileWrapper: { display: 'flex', flexDirection: 'column', height: '100vh', height: '100dvh', background: '#0a0a1a', color: '#e8e8f0', fontFamily: 'system-ui, sans-serif' },
+  mobileTopBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.9)', minHeight: 48 },
+  mobileRoomName: { fontWeight: 700, fontSize: 16, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  mobileTabs: { display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)' },
+  mobileTab: { flex: 1, padding: '10px 0', border: 'none', background: 'transparent', color: '#6b6b80', fontSize: 14, cursor: 'pointer', borderBottom: '2px solid transparent', transition: 'all 0.2s' },
+  mobileTabActive: { color: '#6c63ff', borderBottomColor: '#6c63ff' },
+  mobileContent: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+  mobilePanel: { flex: 1, overflowY: 'auto', padding: 16 },
+  mobileMain: { display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  mobileChatMsgs: { flex: 1, overflowY: 'auto' },
+  mobileControlBar: { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.95)', minHeight: 56 },
+  mobileCtrlBtn: { width: 44, height: 44, borderRadius: 12, border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  mobilePeerBadge: { padding: '6px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.06)', color: '#a0a0b8', fontSize: 12 },
 }
