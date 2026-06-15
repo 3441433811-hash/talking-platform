@@ -106,7 +106,23 @@ class WebRTCManager {
 
   // 移动端重试获取麦克风（必须在用户手势中同步调用）
   async retryMic() {
-    if (this.localStream) return this.localStream
+    if (this.localStream) {
+      const audioTracks = this.localStream.getAudioTracks()
+      audioTracks.forEach((t) => { t.enabled = true })
+      // 强制重启所有 peer 的 audio sender —— 仅设 enabled=true 有时浏览器不恢复编码
+      if (audioTracks.length > 0) {
+        const audioTrack = audioTracks[0]
+        for (const pc of this.peers.values()) {
+          const sender = pc.getSenders().find(s => s.track?.kind === 'audio')
+          if (sender) {
+            sender.replaceTrack(null).then(() => {
+              sender.replaceTrack(audioTrack)
+            }).catch(() => {})
+          }
+        }
+      }
+      return this.localStream
+    }
     if (this._retryingMic) return this._retryingMic
 
     // 直接调用 getUserMedia（不用 async IIFE），iOS 要求 Promise 在用户手势栈中创建

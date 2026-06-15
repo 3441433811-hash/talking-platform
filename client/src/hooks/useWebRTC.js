@@ -132,6 +132,7 @@ export default function useWebRTC(roomId) {
     setMicOn(next)
     if (next) {
       await manager.retryMic()
+      manager.toggleMic(true)
     } else {
       manager.toggleMic(false)
     }
