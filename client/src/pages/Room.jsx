@@ -444,6 +444,13 @@ export default function Room() {
                     onChange={(e) => setSettingsAccessCode(e.target.value)} />
                 </>
               )}
+              {currentRoom?.shortCode && (
+                <div style={styles.shortCodeBox}>
+                  <span style={styles.shortCodeLabel}>房间码</span>
+                  <code style={styles.shortCode}>{currentRoom.shortCode}</code>
+                  <button style={styles.editBtn} onClick={() => { navigator.clipboard.writeText(currentRoom.shortCode) }} title="复制">📋</button>
+                </div>
+              )}
               {!showDeleteConfirm ? (
                 <>
                   <div style={styles.modalBtns}>
@@ -507,11 +514,7 @@ export default function Room() {
             )}
           </>
         )}
-        {(currentRoom?.shortCode) && (
-          <span style={styles.roomId} onClick={() => { navigator.clipboard.writeText(currentRoom.shortCode); setCopied(true); setTimeout(() => setCopied(false), 1500) }} title="点击复制短码分享给朋友">
-            {copied ? '✅ 已复制!' : `🔗 ${currentRoom.shortCode}`}
-          </span>
-        )}
+        <span style={styles.roomId}>{currentRoom?.isPublic === false ? '🔒 私密' : ''}</span>
         <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
       </header>
 
@@ -696,6 +699,13 @@ export default function Room() {
                   onChange={(e) => setSettingsAccessCode(e.target.value)} />
               </>
             )}
+            {currentRoom?.shortCode && (
+              <div style={styles.shortCodeBox}>
+                <span style={styles.shortCodeLabel}>房间码</span>
+                <code style={styles.shortCode}>{currentRoom.shortCode}</code>
+                <button style={styles.editBtn} onClick={() => { navigator.clipboard.writeText(currentRoom.shortCode) }} title="复制">📋</button>
+              </div>
+            )}
             {!showDeleteConfirm ? (
               <>
                 <div style={styles.modalBtns}>
@@ -799,5 +809,8 @@ const styles = {
   deleteConfirm: { background: 'rgba(255,71,87,0.05)', borderRadius: 10, padding: 16 },
   deleteConfirmText: { color: '#ff6b6b', fontSize: 14, margin: 0, marginBottom: 12 },
   deleteConfirmBtn: { padding: '10px 20px', borderRadius: 8, border: 'none', background: '#ff4757', color: '#fff', cursor: 'pointer', fontWeight: 600 },
+  shortCodeBox: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(108,99,255,0.08)', borderRadius: 8, border: '1px solid rgba(108,99,255,0.2)' },
+  shortCodeLabel: { fontSize: 12, color: '#a0a0b8' },
+  shortCode: { fontSize: 21, fontWeight: 800, color: '#6c63ff', letterSpacing: 3, fontFamily: 'monospace' },
   input: { padding: '10px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none', fontSize: 14 },
 }
