@@ -38,6 +38,7 @@ export default function Room() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -506,7 +507,9 @@ export default function Room() {
             )}
           </>
         )}
-        <span style={styles.roomId}>ID: {roomId?.slice(0, 8)}</span>
+        <span style={styles.roomId} onClick={() => { navigator.clipboard.writeText(roomId); setCopied(true); setTimeout(() => setCopied(false), 1500) }} title="点击复制完整ID">
+          {copied ? '✅ 已复制!' : `📋 ${roomId}`}
+        </span>
         <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
       </header>
 
@@ -726,7 +729,7 @@ const styles = {
   wrapper: { display: 'flex', flexDirection: 'column', height: '100vh', background: '#0a0a1a', color: '#e8e8f0', fontFamily: 'system-ui, sans-serif' },
   topBar: { display: 'flex', alignItems: 'center', gap: 16, padding: '10px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.9)' },
   roomName: { fontWeight: 700, fontSize: 18 },
-  roomId: { color: '#6b6b80', fontSize: 12, flex: 1 },
+  roomId: { color: '#6b6b80', fontSize: 12, flex: 1, cursor: 'pointer', userSelect: 'none' },
   editBtn: { padding: '2px 6px', borderRadius: 6, border: 'none', background: 'rgba(255,255,255,0.08)', color: '#a0a0b8', cursor: 'pointer', fontSize: 14, lineHeight: 1 },
   editNameInput: { flex: 1, padding: '6px 12px', borderRadius: 8, border: '1px solid #6c63ff', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none', fontSize: 18, fontWeight: 700, maxWidth: 300 },
   editSaveBtn: { padding: '4px 10px', borderRadius: 6, border: 'none', background: '#6c63ff', color: '#fff', cursor: 'pointer', fontSize: 16 },
