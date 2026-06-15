@@ -12,6 +12,16 @@ export default function Lobby() {
   const [joinError, setJoinError] = useState('')
   const navigate = useNavigate()
 
+  // 记住已通过验证的房间密码/访问码
+  const getSavedCodes = () => {
+    try { return JSON.parse(localStorage.getItem('room_codes') || '{}') } catch (_) { return {} }
+  }
+  const saveRoomCode = (roomId, code) => {
+    const codes = getSavedCodes()
+    codes[roomId] = code
+    localStorage.setItem('room_codes', JSON.stringify(codes))
+  }
+
   useEffect(() => {
     if (!user) {
       getMe().then((res) => setUser(res.data.user)).catch(() => navigate('/'))
@@ -36,9 +46,15 @@ export default function Lobby() {
 
   const handleRoomClick = (room) => {
     if (room.hasPassword || (!room.isPublic && room.hasAccessCode)) {
-      setJoinModal(room)
-      setJoinCode('')
-      setJoinError('')
+      // 检查是否已保存过密码
+      const saved = getSavedCodes()[room.id]
+      if (saved) {
+        navigate(`/room/${room.id}`, { state: { code: saved } })
+      } else {
+        setJoinModal(room)
+        setJoinCode('')
+        setJoinError('')
+      }
     } else {
       navigate(`/room/${room.id}`)
     }
@@ -53,6 +69,7 @@ export default function Lobby() {
         ? { password: joinCode }
         : { accessCode: joinCode }
       await joinRoom(joinModal.id, body)
+      saveRoomCode(joinModal.id, joinCode)
       navigate(`/room/${joinModal.id}`, { state: { code: joinCode } })
     } catch (err) {
       setJoinError(err.response?.data?.message || '验证失败')

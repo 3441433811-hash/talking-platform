@@ -116,6 +116,14 @@ export default function useSocket(roomId, code) {
     // 错误处理
     socket.on('error-msg', ({ message }) => {
       console.error('[Socket] error:', message)
+      // 密码/访问码错误时清除已保存的码并返回大厅
+      if (message.includes('密码') || message.includes('访问码')) {
+        const codes = JSON.parse(localStorage.getItem('room_codes') || '{}')
+        delete codes[roomId]
+        localStorage.setItem('room_codes', JSON.stringify(codes))
+        useStore.getState().reset()
+        window.location.href = '/lobby'
+      }
     })
 
     // 房间被删除
