@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { connectSocket, disconnectSocket, getSocket } from '../services/socket'
 import useStore from '../store/useStore'
 
-export default function useSocket(roomId) {
+export default function useSocket(roomId, accessCode) {
   const {
     setMembers,
     addMember,
@@ -19,7 +19,7 @@ export default function useSocket(roomId) {
     const emitJoin = () => {
       if (roomId) {
         const user = useStore.getState().user
-        socket.emit('join-room', { roomId, userId: user?.id })
+        socket.emit('join-room', { roomId, userId: user?.id, accessCode })
       }
     }
     socket.on('connect', () => {
@@ -118,6 +118,12 @@ export default function useSocket(roomId) {
       console.error('[Socket] error:', message)
     })
 
+    // 房间被删除
+    socket.on('room-deleted', () => {
+      useStore.getState().reset()
+      window.location.href = '/lobby'
+    })
+
     return () => {
       if (roomId) {
         socket.emit('leave-room', { roomId })
@@ -136,6 +142,7 @@ export default function useSocket(roomId) {
       socket.off('screen-share-start')
       socket.off('screen-share-stop')
       socket.off('room-info')
+      socket.off('room-deleted')
       socket.off('error-msg')
     }
   }, [roomId])

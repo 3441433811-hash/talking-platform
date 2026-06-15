@@ -4,7 +4,8 @@ const bcrypt = require('bcryptjs')
 const { authMiddleware } = require('../middleware/auth')
 const db = require('../db')
 
-const router = Router()
+module.exports = (io) => {
+  const router = Router()
 
 // 获取房间列表
 router.get('/', authMiddleware, async (req, res) => {
@@ -14,6 +15,8 @@ router.get('/', authMiddleware, async (req, res) => {
       id: r.id,
       name: r.name,
       hasPassword: !!r.password_hash,
+      isPublic: r.is_public !== false,
+      hasAccessCode: !!r.access_code,
       memberCount: r.member_count || 0,
       ownerId: r.owner_id,
       createdAt: r.created_at,
@@ -34,6 +37,8 @@ router.get('/:id', authMiddleware, async (req, res) => {
         id: room.id,
         name: room.name,
         hasPassword: !!room.password_hash,
+        isPublic: room.is_public !== false,
+        hasAccessCode: !!room.access_code,
         ownerId: room.owner_id,
         createdAt: room.created_at,
       },
@@ -46,7 +51,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 // 创建房间
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { name, password, maxUsers } = req.body
+    const { name, password, maxUsers, isPublic, accessCode } = req.body
     if (!name) return res.status(400).json({ message: '请输入房间名称' })
 
     let passwordHash = null
@@ -61,6 +66,8 @@ router.post('/', authMiddleware, async (req, res) => {
       maxUsers: maxUsers || 10,
       ownerId: req.user.id,
       createdAt: new Date().toISOString(),
+      isPublic: isPublic !== false,
+      accessCode: accessCode || null,
     })
 
     // 系统消息
@@ -84,6 +91,14 @@ router.post('/:id/join', authMiddleware, async (req, res) => {
   try {
     const room = await db.getRoomById(req.params.id)
     if (!room) return res.status(404).json({ message: '房间不存在' })
+
+    // 私密房间检查 access_code
+    if (room.is_public === false && room.access_code) {
+      if (!req.body.accessCode) return res.status(403).json({ message: '请输入房间访问码' })
+      if (req.body.accessCode !== room.access_code) return res.status(403).json({ message: '房间访问码错误' })
+    }
+
+    // 密码保护房间检查密码
     if (room.password_hash) {
       if (!req.body.password) return res.status(403).json({ message: '请输入房间密码' })
       const valid = await bcrypt.compare(req.body.password, room.password_hash)
@@ -91,6 +106,59 @@ router.post('/:id/join', authMiddleware, async (req, res) => {
     }
     res.json({ ok: true })
   } catch (err) {
+    res.status(500).json({ message: '服务器错误' })
+  }
+})
+
+// 更新房间（仅房主）
+router.put('/:id', authMiddleware, async (req, res) => {
+  try {
+    const room = await db.getRoomById(req.params.id)
+    if (!room) return res.status(404).json({ message: '房间不存在' })
+    if (room.owner_id !== req.user.id) {
+      return res.status(403).json({ message: '只有房主可以编辑房间' })
+    }
+
+    const { name, isPublic, accessCode } = req.body
+    if (name !== undefined && (!name || !name.trim())) {
+      return res.status(400).json({ message: '房间名称不能为空' })
+    }
+
+    const updateData = {}
+    if (name !== undefined) updateData.name = name.trim()
+    if (isPublic !== undefined) updateData.isPublic = isPublic
+    if (accessCode !== undefined) updateData.accessCode = accessCode
+
+    const updated = await db.updateRoom(req.params.id, updateData)
+    if (!updated) return res.status(500).json({ message: '更新失败' })
+
+    // 广播房间信息更新给房间内所有用户
+    io.to(req.params.id).emit('room-info', {
+      room: {
+        id: updated.id,
+        name: updated.name,
+        hasPassword: !!updated.password_hash,
+        isPublic: updated.is_public !== false,
+        hasAccessCode: !!updated.access_code,
+        ownerId: updated.owner_id,
+        createdAt: updated.created_at,
+      },
+    })
+
+    res.json({
+      ok: true,
+      room: {
+        id: updated.id,
+        name: updated.name,
+        hasPassword: !!updated.password_hash,
+        isPublic: updated.is_public !== false,
+        hasAccessCode: !!updated.access_code,
+        ownerId: updated.owner_id,
+        createdAt: updated.created_at,
+      },
+    })
+  } catch (err) {
+    console.error('[Rooms] 更新失败:', err)
     res.status(500).json({ message: '服务器错误' })
   }
 })
@@ -103,6 +171,16 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     if (room.owner_id !== req.user.id) {
       return res.status(403).json({ message: '只有房主可以删除房间' })
     }
+
+    // 广播删除事件给房间内所有人，让他们离开
+    io.to(req.params.id).emit('room-deleted', { roomId: req.params.id })
+    // 断开房间内所有 socket 连接
+    const sockets = await io.in(req.params.id).fetchSockets()
+    sockets.forEach((s) => {
+      s.leave(req.params.id)
+      s.data.roomId = null
+    })
+
     await db.deleteRoomById(req.params.id)
     res.json({ ok: true })
   } catch (err) {
@@ -127,4 +205,5 @@ router.get('/:id/messages', authMiddleware, async (req, res) => {
   }
 })
 
-module.exports = router
+  return router
+}

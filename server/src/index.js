@@ -33,7 +33,7 @@ app.use(express.json())
 
 // REST API 路由
 app.use('/api/auth', authRoutes)
-app.use('/api/rooms', roomRoutes)
+app.use('/api/rooms', roomRoutes(io))
 
 // 健康检查
 app.get('/api', (req, res) => {
@@ -50,7 +50,26 @@ io.on('connection', (socket) => {
   console.log(`[Socket] 用户连接: ${socket.id} (${socket.user?.username})`)
 
   // 加入房间（语音 + 信令）
-  socket.on('join-room', ({ roomId, userId }) => {
+  socket.on('join-room', async ({ roomId, userId, accessCode }) => {
+    // 访问控制：检查房间是否存在、私密房间需要 access_code
+    try {
+      const room = await db.getRoomById(roomId)
+      if (!room) {
+        socket.emit('error-msg', { message: '房间不存在' })
+        return
+      }
+      if (room.is_public === false && room.access_code) {
+        if (!accessCode || accessCode !== room.access_code) {
+          socket.emit('error-msg', { message: '房间访问码错误' })
+          return
+        }
+      }
+    } catch (err) {
+      console.error('[Socket] 房间验证失败:', err)
+      socket.emit('error-msg', { message: '房间验证失败' })
+      return
+    }
+
     socket.join(roomId)
     socket.data.roomId = roomId
     socket.data.userId = userId

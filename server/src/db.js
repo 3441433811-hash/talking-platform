@@ -46,6 +46,9 @@ function init(databaseUrl) {
       created_at TEXT NOT NULL
     );
 
+    ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT true;
+    ALTER TABLE rooms ADD COLUMN IF NOT EXISTS access_code TEXT;
+
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       room_id TEXT NOT NULL,
@@ -106,17 +109,17 @@ async function getUserById(id) {
 
 // ==================== Rooms ====================
 
-async function createRoom({ id, name, passwordHash, maxUsers, ownerId, createdAt }) {
+async function createRoom({ id, name, passwordHash, maxUsers, ownerId, createdAt, isPublic, accessCode }) {
   if (useMemory) {
-    const room = { id, name, password_hash: passwordHash || null, max_users: maxUsers || 10, owner_id: ownerId, member_count: 0, created_at: createdAt }
+    const room = { id, name, password_hash: passwordHash || null, max_users: maxUsers || 10, owner_id: ownerId, member_count: 0, created_at: createdAt, is_public: isPublic !== false, access_code: accessCode || null }
     memRooms.push(room)
-    return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt }
+    return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: room.is_public, hasAccessCode: !!accessCode }
   }
   await getPool().query(
-    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at) VALUES ($1, $2, $3, $4, $5, 0, $6)',
-    [id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt]
+    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at, is_public, access_code) VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8)',
+    [id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt, isPublic !== false, accessCode || null]
   )
-  return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt }
+  return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: isPublic !== false, hasAccessCode: !!accessCode }
 }
 
 async function getRoomById(id) {
@@ -126,17 +129,60 @@ async function getRoomById(id) {
 }
 
 async function getAllRooms() {
-  if (useMemory) return [...memRooms].reverse()
-  const res = await getPool().query('SELECT * FROM rooms ORDER BY created_at DESC')
+  if (useMemory) return [...memRooms].filter(r => r.is_public !== false).reverse()
+  const res = await getPool().query('SELECT * FROM rooms WHERE is_public IS NOT FALSE ORDER BY created_at DESC')
   return res.rows
+}
+
+async function updateRoom(id, { name, isPublic, accessCode }) {
+  if (useMemory) {
+    const room = memRooms.find(r => r.id === id)
+    if (!room) return null
+    if (name !== undefined) room.name = name
+    if (isPublic !== undefined) room.is_public = isPublic
+    if (accessCode !== undefined) room.access_code = accessCode || null
+    return {
+      id: room.id,
+      name: room.name,
+      password_hash: room.password_hash,
+      max_users: room.max_users,
+      owner_id: room.owner_id,
+      member_count: room.member_count,
+      created_at: room.created_at,
+      is_public: room.is_public,
+      access_code: room.access_code,
+    }
+  }
+  const setClauses = []
+  const values = [id]
+  let idx = 2
+  if (name !== undefined) { setClauses.push(`name = $${idx++}`); values.push(name) }
+  if (isPublic !== undefined) { setClauses.push(`is_public = $${idx++}`); values.push(isPublic) }
+  if (accessCode !== undefined) { setClauses.push(`access_code = $${idx++}`); values.push(accessCode || null) }
+  if (setClauses.length === 0) {
+    const r = await getRoomById(id)
+    return r ? { ...r } : null
+  }
+  const res = await getPool().query(
+    `UPDATE rooms SET ${setClauses.join(', ')} WHERE id = $1 RETURNING *`,
+    values
+  )
+  return res.rows[0] || null
 }
 
 async function deleteRoomById(id) {
   if (useMemory) {
     const idx = memRooms.findIndex(r => r.id === id)
     if (idx >= 0) memRooms.splice(idx, 1)
+    // 级联删除消息和 AI 上下文
+    for (let i = memMessages.length - 1; i >= 0; i--) {
+      if (memMessages[i].room_id === id) memMessages.splice(i, 1)
+    }
+    memAIContext.delete(id)
     return
   }
+  await getPool().query('DELETE FROM messages WHERE room_id = $1', [id])
+  await getPool().query('DELETE FROM ai_context WHERE room_id = $1', [id])
   await getPool().query('DELETE FROM rooms WHERE id = $1', [id])
 }
 
@@ -240,6 +286,7 @@ module.exports = {
   createRoom,
   getRoomById,
   getAllRooms,
+  updateRoom,
   deleteRoomById,
   incrementMemberCount,
   decrementMemberCount,

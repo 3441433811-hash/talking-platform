@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { getRoom, getMessages } from '../services/api'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { getRoom, getMessages, updateRoom, deleteRoom } from '../services/api'
 import useSocket from '../hooks/useSocket'
 import useWebRTC from '../hooks/useWebRTC'
 import { sendMessage, leaveRoom, aiQuery, getSocket } from '../services/socket'
@@ -9,7 +9,9 @@ import useStore from '../store/useStore'
 export default function Room() {
   const { id: roomId } = useParams()
   const navigate = useNavigate()
-  useSocket(roomId)
+  const location = useLocation()
+  const accessCode = location.state?.accessCode
+  useSocket(roomId, accessCode)
   const { micOn, speakerOn, peerCount, isSharing, toggleMic, toggleSpeaker, toggleScreenShare } = useWebRTC(roomId)
 
   const {
@@ -27,6 +29,15 @@ export default function Room() {
   const [voiceSpeaking, setVoiceSpeaking] = useState(false)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [mobileTab, setMobileTab] = useState('main') // 'members' | 'main' | 'chat'
+  const [editingName, setEditingName] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [showSettings, setShowSettings] = useState(false)
+  const [settingsName, setSettingsName] = useState('')
+  const [settingsIsPublic, setSettingsIsPublic] = useState(true)
+  const [settingsAccessCode, setSettingsAccessCode] = useState('')
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -177,6 +188,64 @@ export default function Room() {
     navigate('/lobby')
   }
 
+  // 编辑房间名称
+  const startEditName = () => {
+    setEditName(currentRoom?.name || '')
+    setEditingName(true)
+  }
+  const saveName = async () => {
+    const name = editName.trim()
+    if (!name || name === currentRoom?.name) {
+      setEditingName(false)
+      return
+    }
+    try {
+      const res = await updateRoom(roomId, { name })
+      setCurrentRoom(res.data.room)
+      setEditingName(false)
+    } catch (err) {
+      console.error('[Room] 更新名称失败:', err)
+    }
+  }
+  const cancelEditName = () => {
+    setEditingName(false)
+  }
+
+  // 房间设置
+  const openSettings = () => {
+    setSettingsName(currentRoom?.name || '')
+    setSettingsIsPublic(currentRoom?.isPublic !== false)
+    setSettingsAccessCode(currentRoom?.hasAccessCode ? '' : '')
+    setShowSettings(true)
+  }
+  const saveSettings = async () => {
+    const name = settingsName.trim()
+    if (!name) return
+    setSettingsSaving(true)
+    try {
+      const data = { name, isPublic: settingsIsPublic, accessCode: settingsAccessCode || '' }
+      const res = await updateRoom(roomId, data)
+      setCurrentRoom(res.data.room)
+      setShowSettings(false)
+    } catch (err) {
+      console.error('[Room] 设置保存失败:', err)
+    }
+    setSettingsSaving(false)
+  }
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await deleteRoom(roomId)
+      reset()
+      navigate('/lobby')
+    } catch (err) {
+      console.error('[Room] 删除失败:', err)
+      setDeleting(false)
+      setShowDeleteConfirm(false)
+    }
+  }
+
   // AI 开关切换
   const handleAiToggle = (enabled) => {
     setAiEnabled(enabled)
@@ -188,7 +257,32 @@ export default function Room() {
       <div style={styles.mobileWrapper}>
         {/* 顶部栏 */}
         <header style={styles.mobileTopBar}>
-          <span style={styles.mobileRoomName}>📻 {currentRoom?.name || '房间'}</span>
+          {editingName ? (
+            <>
+              <input
+                style={styles.mobileEditNameInput}
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') cancelEditName() }}
+                autoFocus
+              />
+              <button style={styles.editSaveBtn} onClick={saveName}>💾</button>
+              <button style={styles.editCancelBtn} onClick={cancelEditName}>✖</button>
+            </>
+          ) : (
+            <>
+              <span style={styles.mobileRoomName}>📻 {currentRoom?.name || '房间'}</span>
+              {!currentRoom?.isPublic && currentRoom?.isPublic !== undefined && (
+                <span style={styles.privateBadge}>🔒</span>
+              )}
+              {currentRoom?.ownerId === user?.id && (
+                <>
+                  <button style={styles.editBtn} onClick={startEditName} title="编辑房间名称">✏️</button>
+                  <button style={styles.editBtn} onClick={openSettings} title="房间设置">⚙️</button>
+                </>
+              )}
+            </>
+          )}
           <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
         </header>
 
@@ -328,6 +422,54 @@ export default function Room() {
           )}
           <span style={styles.mobilePeerBadge}>🔗 {peerCount}</span>
         </footer>
+
+        {/* 房间设置 Modal */}
+        {showSettings && (
+          <div style={styles.modalOverlay} onClick={() => setShowSettings(false)}>
+            <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+              <h3>⚙️ 房间设置</h3>
+              <label style={styles.modalLabel}>房间名称</label>
+              <input style={styles.input} value={settingsName} onChange={(e) => setSettingsName(e.target.value)} />
+              <div style={styles.modalToggle}>
+                <label style={styles.toggleLabel}>
+                  <input type="checkbox" checked={!settingsIsPublic} onChange={(e) => setSettingsIsPublic(!e.target.checked)} />
+                  🔒 私密房间
+                </label>
+              </div>
+              {!settingsIsPublic && (
+                <>
+                  <label style={styles.modalLabel}>访问码（留空则无需码）</label>
+                  <input style={styles.input} placeholder="设置房间访问码" value={settingsAccessCode}
+                    onChange={(e) => setSettingsAccessCode(e.target.value)} />
+                </>
+              )}
+              {!showDeleteConfirm ? (
+                <>
+                  <div style={styles.modalBtns}>
+                    <button style={styles.modalCancelBtn} onClick={() => setShowSettings(false)}>取消</button>
+                    <button style={styles.modalSaveBtn} onClick={saveSettings} disabled={settingsSaving}>
+                      {settingsSaving ? '保存中...' : '保存'}
+                    </button>
+                  </div>
+                  <div style={styles.modalDivider} />
+                  <button style={styles.deleteBtn} onClick={() => setShowDeleteConfirm(true)}>
+                    🗑️ 删除房间
+                  </button>
+                </>
+              ) : (
+                <div style={styles.deleteConfirm}>
+                  <p style={styles.deleteConfirmText}>确定要删除房间吗？此操作不可撤销。</p>
+                  <div style={styles.modalBtns}>
+                    <button style={styles.modalCancelBtn} onClick={() => setShowDeleteConfirm(false)}>取消</button>
+                    <button style={styles.deleteConfirmBtn} onClick={handleDelete} disabled={deleting}>
+                      {deleting ? '删除中...' : '确认删除'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -338,7 +480,32 @@ export default function Room() {
     <div style={styles.wrapper}>
       {/* 顶部栏 */}
       <header style={styles.topBar}>
-        <span style={styles.roomName}>📻 {currentRoom?.name || roomId}</span>
+        {editingName ? (
+          <>
+            <input
+              style={styles.editNameInput}
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') cancelEditName() }}
+              autoFocus
+            />
+            <button style={styles.editSaveBtn} onClick={saveName}>💾</button>
+            <button style={styles.editCancelBtn} onClick={cancelEditName}>✖</button>
+          </>
+        ) : (
+          <>
+            <span style={styles.roomName}>📻 {currentRoom?.name || roomId}</span>
+            {!currentRoom?.isPublic && currentRoom?.isPublic !== undefined && (
+              <span style={styles.privateBadge}>🔒 私密</span>
+            )}
+            {currentRoom?.ownerId === user?.id && (
+              <>
+                <button style={styles.editBtn} onClick={startEditName} title="编辑房间名称">✏️</button>
+                <button style={styles.editBtn} onClick={openSettings} title="房间设置">⚙️</button>
+              </>
+            )}
+          </>
+        )}
         <span style={styles.roomId}>ID: {roomId?.slice(0, 8)}</span>
         <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
       </header>
@@ -503,6 +670,54 @@ export default function Room() {
           🔗 {peerCount}
         </span>
       </footer>
+
+      {/* 房间设置 Modal */}
+      {showSettings && (
+        <div style={styles.modalOverlay} onClick={() => setShowSettings(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3>⚙️ 房间设置</h3>
+            <label style={styles.modalLabel}>房间名称</label>
+            <input style={styles.input} value={settingsName} onChange={(e) => setSettingsName(e.target.value)} />
+            <div style={styles.modalToggle}>
+              <label style={styles.toggleLabel}>
+                <input type="checkbox" checked={!settingsIsPublic} onChange={(e) => setSettingsIsPublic(!e.target.checked)} />
+                🔒 私密房间
+              </label>
+            </div>
+            {!settingsIsPublic && (
+              <>
+                <label style={styles.modalLabel}>访问码（留空则无需码）</label>
+                <input style={styles.input} placeholder="设置房间访问码" value={settingsAccessCode}
+                  onChange={(e) => setSettingsAccessCode(e.target.value)} />
+              </>
+            )}
+            {!showDeleteConfirm ? (
+              <>
+                <div style={styles.modalBtns}>
+                  <button style={styles.modalCancelBtn} onClick={() => setShowSettings(false)}>取消</button>
+                  <button style={styles.modalSaveBtn} onClick={saveSettings} disabled={settingsSaving}>
+                    {settingsSaving ? '保存中...' : '保存'}
+                  </button>
+                </div>
+                <div style={styles.modalDivider} />
+                <button style={styles.deleteBtn} onClick={() => setShowDeleteConfirm(true)}>
+                  🗑️ 删除房间
+                </button>
+              </>
+            ) : (
+              <div style={styles.deleteConfirm}>
+                <p style={styles.deleteConfirmText}>确定要删除房间吗？此操作不可撤销。</p>
+                <div style={styles.modalBtns}>
+                  <button style={styles.modalCancelBtn} onClick={() => setShowDeleteConfirm(false)}>取消</button>
+                  <button style={styles.deleteConfirmBtn} onClick={handleDelete} disabled={deleting}>
+                    {deleting ? '删除中...' : '确认删除'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -512,6 +727,10 @@ const styles = {
   topBar: { display: 'flex', alignItems: 'center', gap: 16, padding: '10px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.9)' },
   roomName: { fontWeight: 700, fontSize: 18 },
   roomId: { color: '#6b6b80', fontSize: 12, flex: 1 },
+  editBtn: { padding: '2px 6px', borderRadius: 6, border: 'none', background: 'rgba(255,255,255,0.08)', color: '#a0a0b8', cursor: 'pointer', fontSize: 14, lineHeight: 1 },
+  editNameInput: { flex: 1, padding: '6px 12px', borderRadius: 8, border: '1px solid #6c63ff', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none', fontSize: 18, fontWeight: 700, maxWidth: 300 },
+  editSaveBtn: { padding: '4px 10px', borderRadius: 6, border: 'none', background: '#6c63ff', color: '#fff', cursor: 'pointer', fontSize: 16 },
+  editCancelBtn: { padding: '4px 10px', borderRadius: 6, border: 'none', background: 'rgba(255,255,255,0.08)', color: '#a0a0b8', cursor: 'pointer', fontSize: 16 },
   leaveBtn: { padding: '6px 16px', borderRadius: 8, border: 'none', background: '#ff4757', color: '#fff', cursor: 'pointer', fontWeight: 600 },
   body: { display: 'flex', flex: 1, overflow: 'hidden' },
   sidebar: { width: 200, padding: 16, borderRight: '1px solid rgba(255,255,255,0.08)', overflowY: 'auto' },
@@ -549,6 +768,7 @@ const styles = {
   mobileWrapper: { display: 'flex', flexDirection: 'column', height: '100vh', height: '100dvh', background: '#0a0a1a', color: '#e8e8f0', fontFamily: 'system-ui, sans-serif' },
   mobileTopBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.9)', minHeight: 48 },
   mobileRoomName: { fontWeight: 700, fontSize: 16, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  mobileEditNameInput: { flex: 1, padding: '4px 10px', borderRadius: 8, border: '1px solid #6c63ff', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none', fontSize: 16, fontWeight: 700, maxWidth: 180 },
   mobileTabs: { display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)' },
   mobileTab: { flex: 1, padding: '10px 0', border: 'none', background: 'transparent', color: '#6b6b80', fontSize: 14, cursor: 'pointer', borderBottom: '2px solid transparent', transition: 'all 0.2s' },
   mobileTabActive: { color: '#6c63ff', borderBottomColor: '#6c63ff' },
@@ -559,4 +779,20 @@ const styles = {
   mobileControlBar: { display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,26,0.95)', minHeight: 56 },
   mobileCtrlBtn: { width: 44, height: 44, borderRadius: 12, border: 'none', color: '#fff', fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   mobilePeerBadge: { padding: '6px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.06)', color: '#a0a0b8', fontSize: 12 },
+  // 房间设置 Modal
+  privateBadge: { fontSize: 11, color: '#ff6b6b', background: 'rgba(255,107,107,0.15)', padding: '2px 8px', borderRadius: 4, marginLeft: 8 },
+  modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modal: { background: '#1a1a3e', borderRadius: 16, padding: 28, width: 380, maxWidth: '90vw', border: '1px solid rgba(255,255,255,0.1)', display: 'flex', flexDirection: 'column', gap: 12 },
+  modalLabel: { fontSize: 13, color: '#a0a0b8', marginBottom: -8 },
+  modalToggle: { display: 'flex', alignItems: 'center' },
+  toggleLabel: { fontSize: 14, color: '#a0a0b8', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' },
+  modalBtns: { display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 8 },
+  modalCancelBtn: { padding: '10px 20px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: '#a0a0b8', cursor: 'pointer' },
+  modalSaveBtn: { padding: '10px 20px', borderRadius: 8, border: 'none', background: '#6c63ff', color: '#fff', cursor: 'pointer', fontWeight: 600 },
+  modalDivider: { borderTop: '1px solid rgba(255,255,255,0.08)', margin: '4px 0' },
+  deleteBtn: { padding: '10px 16px', borderRadius: 8, border: '1px solid rgba(255,71,87,0.3)', background: 'transparent', color: '#ff4757', cursor: 'pointer', fontSize: 14, fontWeight: 600 },
+  deleteConfirm: { background: 'rgba(255,71,87,0.05)', borderRadius: 10, padding: 16 },
+  deleteConfirmText: { color: '#ff6b6b', fontSize: 14, margin: 0, marginBottom: 12 },
+  deleteConfirmBtn: { padding: '10px 20px', borderRadius: 8, border: 'none', background: '#ff4757', color: '#fff', cursor: 'pointer', fontWeight: 600 },
+  input: { padding: '10px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none', fontSize: 14 },
 }
