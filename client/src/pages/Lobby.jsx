@@ -7,9 +7,13 @@ export default function Lobby() {
   const { user, setUser, rooms, setRooms } = useStore()
   const [showCreate, setShowCreate] = useState(false)
   const [newRoom, setNewRoom] = useState({ name: '', password: '', maxUsers: 10, isPublic: true, accessCode: '' })
-  const [joinModal, setJoinModal] = useState(null) // 私密房间加入弹窗
+  const [joinModal, setJoinModal] = useState(null)
   const [joinCode, setJoinCode] = useState('')
   const [joinError, setJoinError] = useState('')
+  const [showDirectJoin, setShowDirectJoin] = useState(false)
+  const [directRoomId, setDirectRoomId] = useState('')
+  const [directCode, setDirectCode] = useState('')
+  const [directError, setDirectError] = useState('')
   const navigate = useNavigate()
 
   // 记住已通过验证的房间密码/访问码
@@ -76,6 +80,20 @@ export default function Lobby() {
     }
   }
 
+  const handleDirectJoin = async (e) => {
+    e.preventDefault()
+    const id = directRoomId.trim()
+    const code = directCode.trim()
+    if (!id) return setDirectError('请输入房间 ID')
+    try {
+      await joinRoom(id, { accessCode: code, password: code })
+      saveRoomCode(id, code)
+      navigate(`/room/${id}`, { state: { code } })
+    } catch (err) {
+      setDirectError(err.response?.data?.message || '加入失败，请检查 ID 和访问码')
+    }
+  }
+
   const handleLogout = () => {
     localStorage.removeItem('token')
     setUser(null)
@@ -97,10 +115,27 @@ export default function Lobby() {
       <main style={styles.main}>
         <div style={styles.topBar}>
           <h2>房间大厅</h2>
-          <button style={styles.createBtn} onClick={() => setShowCreate(!showCreate)}>
-            + 创建房间
-          </button>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button style={styles.createBtn} onClick={() => { setShowCreate(!showCreate); setShowDirectJoin(false) }}>
+              + 创建房间
+            </button>
+            <button style={styles.directJoinBtn} onClick={() => { setShowDirectJoin(!showDirectJoin); setShowCreate(false); setDirectError('') }}>
+              🔒 加入私密房间
+            </button>
+          </div>
         </div>
+
+        {/* 加入私密房间表单 */}
+        {showDirectJoin && (
+          <form style={styles.createForm} onSubmit={handleDirectJoin}>
+            <input style={styles.input} placeholder="房间 ID" value={directRoomId}
+              onChange={(e) => { setDirectRoomId(e.target.value); setDirectError('') }} />
+            <input style={styles.input} placeholder="访问码（如有）" value={directCode}
+              onChange={(e) => { setDirectCode(e.target.value); setDirectError('') }} />
+            <button type="submit" style={styles.submitBtn}>加入</button>
+            {directError && <p style={styles.error}>{directError}</p>}
+          </form>
+        )}
 
         {/* 创建房间表单 */}
         {showCreate && (
@@ -170,6 +205,7 @@ const styles = {
   main: { maxWidth: 900, margin: '0 auto', padding: 32 },
   topBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   createBtn: { padding: '10px 24px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg, #6c63ff, #3b82f6)', color: '#fff', fontWeight: 600, cursor: 'pointer' },
+  directJoinBtn: { padding: '10px 24px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.05)', color: '#e8e8f0', fontWeight: 600, cursor: 'pointer', fontSize: 14 },
   createForm: { display: 'flex', gap: 12, marginBottom: 24, padding: 20, background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)' },
   input: { flex: 1, padding: '10px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.05)', color: '#fff', outline: 'none' },
   submitBtn: { padding: '10px 20px', borderRadius: 8, border: 'none', background: '#6c63ff', color: '#fff', cursor: 'pointer' },
