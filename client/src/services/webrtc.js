@@ -455,13 +455,13 @@ class WebRTCManager {
     video.playsInline = true
     video.muted = true
     video.id = `screen-video-${peerId}`
-    // 屏幕居中，固定最小尺寸避免视频元数据未加载时塌陷为 0 高度
+    // 刚好占住中间框（左栏 200px ~ 右栏 320px）
     video.style.cssText = `
       position: fixed;
       top: 50%;
-      left: 50%;
+      left: calc((100vw - 120px) / 2);
       transform: translate(-50%, -50%);
-      max-width: 70vw;
+      max-width: calc(100vw - 520px);
       min-width: 300px;
       max-height: 75vh;
       min-height: 200px;
