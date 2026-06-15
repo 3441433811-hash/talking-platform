@@ -215,7 +215,7 @@ export default function Room() {
   const openSettings = () => {
     setSettingsName(currentRoom?.name || '')
     setSettingsIsPublic(currentRoom?.isPublic !== false)
-    setSettingsAccessCode(currentRoom?.hasAccessCode ? '' : '')
+    setSettingsAccessCode(currentRoom?.accessCode || '')
     setShowSettings(true)
   }
   const saveSettings = async () => {
