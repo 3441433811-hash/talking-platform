@@ -7,6 +7,13 @@ const db = require('../db')
 module.exports = (io) => {
   const router = Router()
 
+  // 查找房间：先按 UUID，再按短码
+  async function findRoom(idOrCode) {
+    let room = await db.getRoomById(idOrCode)
+    if (!room) room = await db.getRoomByShortCode(idOrCode)
+    return room
+  }
+
 // 获取房间列表
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -30,7 +37,7 @@ router.get('/', authMiddleware, async (req, res) => {
 // 获取房间详情
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
-    const room = await db.getRoomById(req.params.id)
+    const room = await findRoom(req.params.id)
     if (!room) return res.status(404).json({ message: '房间不存在' })
     res.json({
       room: {
@@ -40,6 +47,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
         isPublic: room.is_public !== false,
         hasAccessCode: !!room.access_code,
         accessCode: room.access_code || null,
+        shortCode: room.short_code || null,
         ownerId: room.owner_id,
         createdAt: room.created_at,
       },
@@ -90,7 +98,7 @@ router.post('/', authMiddleware, async (req, res) => {
 // 加入房间（密码验证）
 router.post('/:id/join', authMiddleware, async (req, res) => {
   try {
-    const room = await db.getRoomById(req.params.id)
+    const room = await findRoom(req.params.id)
     if (!room) return res.status(404).json({ message: '房间不存在' })
 
     // 私密房间检查 access_code
@@ -114,7 +122,7 @@ router.post('/:id/join', authMiddleware, async (req, res) => {
 // 更新房间（仅房主）
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
-    const room = await db.getRoomById(req.params.id)
+    const room = await findRoom(req.params.id)
     if (!room) return res.status(404).json({ message: '房间不存在' })
     if (room.owner_id !== req.user.id) {
       return res.status(403).json({ message: '只有房主可以编辑房间' })
@@ -142,6 +150,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         isPublic: updated.is_public !== false,
         hasAccessCode: !!updated.access_code,
         accessCode: updated.access_code || null,
+        shortCode: updated.short_code || null,
         ownerId: updated.owner_id,
         createdAt: updated.created_at,
       },
@@ -156,6 +165,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         isPublic: updated.is_public !== false,
         hasAccessCode: !!updated.access_code,
         accessCode: updated.access_code || null,
+        shortCode: updated.short_code || null,
         ownerId: updated.owner_id,
         createdAt: updated.created_at,
       },
@@ -169,7 +179,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
 // 删除房间（仅房主）
 router.delete('/:id', authMiddleware, async (req, res) => {
   try {
-    const room = await db.getRoomById(req.params.id)
+    const room = await findRoom(req.params.id)
     if (!room) return res.status(404).json({ message: '房间不存在' })
     if (room.owner_id !== req.user.id) {
       return res.status(403).json({ message: '只有房主可以删除房间' })

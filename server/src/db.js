@@ -48,6 +48,7 @@ function init(databaseUrl) {
 
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT true;
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS access_code TEXT;
+    ALTER TABLE rooms ADD COLUMN IF NOT EXISTS short_code TEXT;
 
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -107,24 +108,38 @@ async function getUserById(id) {
   return res.rows[0] || null
 }
 
+function makeShortCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // 去掉容易混淆的 0/O/1/I
+  let code = ''
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)]
+  return code
+}
+
 // ==================== Rooms ====================
 
 async function createRoom({ id, name, passwordHash, maxUsers, ownerId, createdAt, isPublic, accessCode }) {
+  const shortCode = makeShortCode()
   if (useMemory) {
-    const room = { id, name, password_hash: passwordHash || null, max_users: maxUsers || 10, owner_id: ownerId, member_count: 0, created_at: createdAt, is_public: isPublic !== false, access_code: accessCode || null }
+    const room = { id, name, password_hash: passwordHash || null, max_users: maxUsers || 10, owner_id: ownerId, member_count: 0, created_at: createdAt, is_public: isPublic !== false, access_code: accessCode || null, short_code: shortCode }
     memRooms.push(room)
-    return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: room.is_public, hasAccessCode: !!accessCode }
+    return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: room.is_public, hasAccessCode: !!accessCode, shortCode }
   }
   await getPool().query(
-    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at, is_public, access_code) VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8)',
-    [id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt, isPublic !== false, accessCode || null]
+    'INSERT INTO rooms (id, name, password_hash, max_users, owner_id, member_count, created_at, is_public, access_code, short_code) VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9)',
+    [id, name, passwordHash || null, maxUsers || 10, ownerId, createdAt, isPublic !== false, accessCode || null, shortCode]
   )
-  return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: isPublic !== false, hasAccessCode: !!accessCode }
+  return { id, name, hasPassword: !!passwordHash, maxUsers: maxUsers || 10, ownerId, memberCount: 0, createdAt, isPublic: isPublic !== false, hasAccessCode: !!accessCode, shortCode }
 }
 
 async function getRoomById(id) {
   if (useMemory) return memRooms.find(r => r.id === id) || null
   const res = await getPool().query('SELECT * FROM rooms WHERE id = $1', [id])
+  return res.rows[0] || null
+}
+
+async function getRoomByShortCode(code) {
+  if (useMemory) return memRooms.find(r => r.short_code === code) || null
+  const res = await getPool().query('SELECT * FROM rooms WHERE short_code = $1', [code])
   return res.rows[0] || null
 }
 
@@ -296,6 +311,7 @@ module.exports = {
   getUserById,
   createRoom,
   getRoomById,
+  getRoomByShortCode,
   getAllRooms,
   updateRoom,
   deleteRoomById,

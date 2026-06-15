@@ -507,9 +507,11 @@ export default function Room() {
             )}
           </>
         )}
-        <span style={styles.roomId} onClick={() => { navigator.clipboard.writeText(roomId); setCopied(true); setTimeout(() => setCopied(false), 1500) }} title="点击复制完整ID">
-          {copied ? '✅ 已复制!' : `📋 ${roomId}`}
-        </span>
+        {(currentRoom?.shortCode) && (
+          <span style={styles.roomId} onClick={() => { navigator.clipboard.writeText(currentRoom.shortCode); setCopied(true); setTimeout(() => setCopied(false), 1500) }} title="点击复制短码分享给朋友">
+            {copied ? '✅ 已复制!' : `🔗 ${currentRoom.shortCode}`}
+          </span>
+        )}
         <button style={styles.leaveBtn} onClick={handleLeave}>📞 离开</button>
       </header>
 

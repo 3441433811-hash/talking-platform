@@ -128,7 +128,7 @@ export default function Lobby() {
         {/* 加入私密房间表单 */}
         {showDirectJoin && (
           <form style={styles.createForm} onSubmit={handleDirectJoin}>
-            <input style={styles.input} placeholder="房间 ID" value={directRoomId}
+            <input style={styles.input} placeholder="房间短码 (如 ABC123)" value={directRoomId}
               onChange={(e) => { setDirectRoomId(e.target.value); setDirectError('') }} />
             <input style={styles.input} placeholder="访问码（如有）" value={directCode}
               onChange={(e) => { setDirectCode(e.target.value); setDirectError('') }} />
