@@ -128,8 +128,19 @@ async function getRoomById(id) {
   return res.rows[0] || null
 }
 
-async function getAllRooms() {
-  if (useMemory) return [...memRooms].filter(r => r.is_public !== false).reverse()
+async function getAllRooms(ownerId) {
+  if (useMemory) {
+    return [...memRooms]
+      .filter(r => r.is_public !== false || (ownerId && r.owner_id === ownerId))
+      .reverse()
+  }
+  if (ownerId) {
+    const res = await getPool().query(
+      'SELECT * FROM rooms WHERE is_public IS NOT FALSE OR owner_id = $1 ORDER BY created_at DESC',
+      [ownerId]
+    )
+    return res.rows
+  }
   const res = await getPool().query('SELECT * FROM rooms WHERE is_public IS NOT FALSE ORDER BY created_at DESC')
   return res.rows
 }

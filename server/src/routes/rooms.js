@@ -10,7 +10,7 @@ module.exports = (io) => {
 // 获取房间列表
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const rows = await db.getAllRooms()
+    const rows = await db.getAllRooms(req.user.id)
     const list = rows.map((r) => ({
       id: r.id,
       name: r.name,
