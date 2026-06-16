@@ -138,7 +138,7 @@ class WebRTCManager {
       // peer 重协商不阻塞 Promise 链，避免 setMicOn(true) 迟迟不触发
       for (const [peerId, pc] of this.peers) {
         stream.getTracks().forEach((t) => pc.addTrack(t, stream))
-        pc.createOffer().then((offer) =>
+        pc.createOffer({ iceRestart: false }).then((offer) =>
           pc.setLocalDescription(offer).then(() =>
             getSocket()?.emit('offer', { targetId: peerId, sdp: pc.localDescription })
           )
@@ -327,7 +327,7 @@ class WebRTCManager {
             console.log('[WebRTC] PC 已稳定:', peerId)
           }
           pc.addTrack(videoTrack, stream)
-          const offer = await pc.createOffer()
+          const offer = await pc.createOffer({ iceRestart: false })
           await pc.setLocalDescription(offer)
           if (skt?.connected) {
             skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
@@ -359,43 +359,17 @@ class WebRTCManager {
   }
 
   // 停止本地屏幕共享
-  async stopScreenShare() {
+  stopScreenShare() {
     if (!this.isSharingScreen || !this.screenStream) return
 
     const tracks = this.screenStream.getVideoTracks()
-    const skt = getSocket()
-
-    for (const track of tracks) {
-      for (const [peerId, pc] of this.peers) {
+    tracks.forEach((track) => {
+      this.peers.forEach((pc) => {
         const sender = pc.getSenders().find((s) => s.track === track)
-        if (!sender) continue
-        pc.removeTrack(sender)
-        // removeTrack 后必须显式重协商，否则：
-        // 1. 发送端 PC 留在非 stable 状态，下次屏幕共享会失败
-        // 2. 接收端不知道 track 已移除，远程视频元素不会清理
-        try {
-          // 等待 PC 稳定后再 createOffer（removeTrack 可能触发 negotiationneeded 使状态变化）
-          if (pc.signalingState !== 'stable') {
-            await new Promise((resolve) => {
-              const check = () => {
-                if (pc.signalingState === 'stable') resolve()
-                else setTimeout(check, 50)
-              }
-              check()
-            })
-          }
-          const offer = await pc.createOffer()
-          await pc.setLocalDescription(offer)
-          if (skt?.connected) {
-            skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
-          }
-          console.log('[WebRTC] stopScreenShare 重协商 offer 已发送:', peerId)
-        } catch (err) {
-          console.warn('[WebRTC] stopScreenShare 重协商失败:', peerId, err.message)
-        }
-      }
+        if (sender) pc.removeTrack(sender)
+      })
       track.stop()
-    }
+    })
 
     this.screenStream = null
     this.isSharingScreen = false
@@ -475,17 +449,19 @@ class WebRTCManager {
     }
 
     // 连接状态
+    // 注意：renegotiation 时 connectionState 会短暂进入 "connecting"，不要立即移除
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] 连接状态 [${peerId}]:`, pc.connectionState)
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      // 只有确认无法恢复时才移除 — "disconnected" 可能在几秒后自动恢复
+      if (pc.connectionState === 'failed') {
+        console.warn(`[WebRTC] 连接失败，移除 peer: ${peerId}`)
         this._removePeer(peerId)
       }
     }
 
+    // ICE 状态变化仅记录日志，不主动移除 peer（由 connectionState 统一处理）
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'failed') {
-        this._removePeer(peerId)
-      }
+      console.log(`[WebRTC] ICE 状态 [${peerId}]:`, pc.iceConnectionState)
     }
 
     this.peers.set(peerId, pc)
