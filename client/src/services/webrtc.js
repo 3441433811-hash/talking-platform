@@ -212,8 +212,7 @@ class WebRTCManager {
           await pc.setRemoteDescription(new RTCSessionDescription(sdp))
           const answer = await pc.createAnswer()
           await pc.setLocalDescription(answer)
-          // 使用 userId 而非 socketId 作为路由键（服务端按 userId 精准路由）
-          sendAnswer(peerId, pc.localDescription)
+          sendAnswer(fromId, pc.localDescription)
           console.log('[WebRTC] 重协商 Answer 已发送:', peerId)
         } catch (err) {
           console.error('[WebRTC] 重协商失败, signalingState:', pc.signalingState, 'error:', err.message)
@@ -224,7 +223,7 @@ class WebRTCManager {
               await pc.setRemoteDescription(new RTCSessionDescription(sdp))
               const answer = await pc.createAnswer()
               await pc.setLocalDescription(answer)
-              sendAnswer(peerId, pc.localDescription)
+              sendAnswer(fromId, pc.localDescription)
               console.log('[WebRTC] 重协商重试成功:', peerId)
             } catch (retryErr) {
               console.error('[WebRTC] 重协商重试也失败:', retryErr.message)
@@ -241,7 +240,7 @@ class WebRTCManager {
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
 
-      sendAnswer(peerId, pc.localDescription)
+      sendAnswer(fromId, pc.localDescription)
     } catch (err) {
       console.error('[WebRTC] 处理 Offer 失败:', err)
     }
