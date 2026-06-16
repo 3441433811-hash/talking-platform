@@ -332,7 +332,8 @@ class WebRTCManager {
           if (skt?.connected) {
             skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
           }
-          console.log('[WebRTC] renegotiation offer sent to:', peerId)
+          console.log('[WebRTC] renegotiation offer sent to:', peerId,
+            'sktConnected:', skt?.connected, 'sdpLines:', pc.localDescription?.sdp?.split('\n').length)
         } catch (err) {
           console.error('[WebRTC] renegotiation error:', peerId, err.message)
         }
@@ -416,9 +417,6 @@ class WebRTCManager {
         pc.addTrack(track, this.localStream)
       })
     }
-
-    // 预创建 video transceiver（便于后续屏幕共享 renegotiation — 避免动态创建时的浏览器兼容问题）
-    pc.addTransceiver('video', { direction: 'recvonly' })
 
     // 如果正在共享屏幕，也添加到新连接
     if (this.isSharingScreen && this.screenStream) {
