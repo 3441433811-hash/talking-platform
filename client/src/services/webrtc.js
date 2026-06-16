@@ -53,6 +53,7 @@ class WebRTCManager {
     this.remoteStreams = new Map()                // userId → MediaStream (音频)
     this.remoteScreenStreams = new Map()          // userId → MediaStream (屏幕)
     this.screenVideos = new Map()                 // userId → HTMLVideoElement
+    this._currentScreenSharer = null              // 当前正在显示的共享者 userId（用于停止时匹配）
     this.audioContext = null                      // 用于音量检测
     this.analysers = new Map()                    // userId → AnalyserNode
 
@@ -112,21 +113,14 @@ class WebRTCManager {
       // 强制重启所有 peer 的 audio sender —— 仅设 enabled=true 有时浏览器不恢复编码
       if (audioTracks.length > 0) {
         const audioTrack = audioTracks[0]
-        const ops = []
         for (const pc of this.peers.values()) {
           const sender = pc.getSenders().find(s => s.track?.kind === 'audio')
           if (sender) {
-            ops.push(
-              sender.replaceTrack(null).then(() =>
-                sender.replaceTrack(audioTrack)
-              ).catch((err) => {
-                console.warn('[WebRTC] replaceTrack 恢复失败:', err.message)
-              })
-            )
+            sender.replaceTrack(null).then(() => {
+              sender.replaceTrack(audioTrack)
+            }).catch(() => {})
           }
         }
-        // 等待所有 replaceTrack 完成，避免 hook 中 toggleMic(true) 竞态
-        await Promise.allSettled(ops)
       }
       return this.localStream
     }
@@ -201,6 +195,21 @@ class WebRTCManager {
       if (this.peers.has(peerId)) {
         const pc = this.peers.get(peerId)
         console.log('[WebRTC] 复用已有 PC 处理重协商, signalingState:', pc.signalingState)
+
+        // 等待 signalingState 回到 stable——并发操作（retryMic / ICE 重启）可能导致
+        // 状态非 stable，此时 setRemoteDescription 会抛 InvalidStateError 并静默失败
+        if (pc.signalingState !== 'stable') {
+          console.log('[WebRTC] 等待 PC stable 再处理重协商 offer:', peerId)
+          await new Promise((resolve) => {
+            const check = () => {
+              if (pc.signalingState === 'stable') resolve()
+              else setTimeout(check, 50)
+            }
+            check()
+          })
+          console.log('[WebRTC] PC 已稳定，继续处理 offer:', peerId)
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(sdp))
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
@@ -267,9 +276,17 @@ class WebRTCManager {
   _handleScreenShareStop(e) {
     const { userId } = e.detail
     console.log('[WebRTC] 远程用户停止屏幕共享:', userId)
+
+    // 只清理指定用户的屏幕视频
     this._hideScreenVideo(userId)
-    if (this.onScreenShare) {
-      this.onScreenShare(null, null, false)
+
+    // 仅当停止者与当前显示的共享者匹配时，才通知 React 清除状态
+    // 防止多个用户同时共享时，一个停止就清掉所有
+    if (this._currentScreenSharer === userId) {
+      this._currentScreenSharer = null
+      if (this.onScreenShare) {
+        this.onScreenShare(null, null, false)
+      }
     }
   }
 
@@ -279,7 +296,11 @@ class WebRTCManager {
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15 } },
+        video: {
+          frameRate: { ideal: 15 },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+        },
         audio: false,
       })
 
@@ -292,8 +313,20 @@ class WebRTCManager {
       console.log('[WebRTC] 开始屏幕共享, peers:', this.peers.size, 'track readyState:', videoTrack?.readyState)
       for (const [peerId, pc] of this.peers) {
         if (pc.connectionState === 'closed' || pc.connectionState === 'failed') continue
-        pc.addTrack(videoTrack, stream)
         try {
+          // 等待 signalingState 回到 stable — 跨设备网络延迟下可能还在 have-local-offer / have-remote-offer
+          if (pc.signalingState !== 'stable') {
+            console.log('[WebRTC] 等待 PC 稳定后再添加屏幕轨道:', peerId, '当前状态:', pc.signalingState)
+            await new Promise((resolve) => {
+              const check = () => {
+                if (pc.signalingState === 'stable') resolve()
+                else setTimeout(check, 50)
+              }
+              check()
+            })
+            console.log('[WebRTC] PC 已稳定:', peerId)
+          }
+          pc.addTrack(videoTrack, stream)
           const offer = await pc.createOffer()
           await pc.setLocalDescription(offer)
           if (skt?.connected) {
@@ -325,17 +358,43 @@ class WebRTCManager {
   }
 
   // 停止本地屏幕共享
-  stopScreenShare() {
+  async stopScreenShare() {
     if (!this.isSharingScreen || !this.screenStream) return
 
     const tracks = this.screenStream.getVideoTracks()
-    tracks.forEach((track) => {
-      this.peers.forEach((pc) => {
+    const skt = getSocket()
+
+    for (const track of tracks) {
+      for (const [peerId, pc] of this.peers) {
         const sender = pc.getSenders().find((s) => s.track === track)
-        if (sender) pc.removeTrack(sender)
-      })
+        if (!sender) continue
+        pc.removeTrack(sender)
+        // removeTrack 后必须显式重协商，否则：
+        // 1. 发送端 PC 留在非 stable 状态，下次屏幕共享会失败
+        // 2. 接收端不知道 track 已移除，远程视频元素不会清理
+        try {
+          // 等待 PC 稳定后再 createOffer（removeTrack 可能触发 negotiationneeded 使状态变化）
+          if (pc.signalingState !== 'stable') {
+            await new Promise((resolve) => {
+              const check = () => {
+                if (pc.signalingState === 'stable') resolve()
+                else setTimeout(check, 50)
+              }
+              check()
+            })
+          }
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          if (skt?.connected) {
+            skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
+          }
+          console.log('[WebRTC] stopScreenShare 重协商 offer 已发送:', peerId)
+        } catch (err) {
+          console.warn('[WebRTC] stopScreenShare 重协商失败:', peerId, err.message)
+        }
+      }
       track.stop()
-    })
+    }
 
     this.screenStream = null
     this.isSharingScreen = false
@@ -357,6 +416,9 @@ class WebRTCManager {
         pc.addTrack(track, this.localStream)
       })
     }
+
+    // 预创建 video transceiver（便于后续屏幕共享 renegotiation — 避免动态创建时的浏览器兼容问题）
+    pc.addTransceiver('video', { direction: 'recvonly' })
 
     // 如果正在共享屏幕，也添加到新连接
     if (this.isSharingScreen && this.screenStream) {
@@ -385,6 +447,7 @@ class WebRTCManager {
       if (isVideo) {
         // 屏幕共享视频流 — 直接挂载到 body（独立于 React 管控，避免 reconciliation 冲突）
         this.remoteScreenStreams.set(peerId, remoteStream)
+        this._currentScreenSharer = peerId        // 记录当前共享者，用于停止时精确匹配
         this._showScreenVideo(peerId, remoteStream)
 
         // 同时通知 React 更新状态（UI 标签等）
@@ -396,6 +459,7 @@ class WebRTCManager {
         event.track.onended = () => {
           console.log('[WebRTC] 屏幕视频 track 结束:', peerId)
           this._hideScreenVideo(peerId)
+          this._currentScreenSharer = null
           if (this.onScreenShare) {
             this.onScreenShare(null, null, false)
           }
@@ -492,14 +556,43 @@ class WebRTCManager {
       border: 2px solid rgba(108, 99, 255, 0.5);
       z-index: 500;
       box-shadow: 0 0 40px rgba(0,0,0,0.6);
-      opacity: 0;
-      transition: opacity 0.2s ease-in;
+      background: rgba(0,0,0,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     `
 
-    // 视频元数据加载后再显示，避免空白元素闪烁
-    video.addEventListener('loadedmetadata', () => {
-      video.style.opacity = '1'
-    }, { once: true })
+    // 视频数据到达时去掉加载背景
+    const removeLoadingBg = () => {
+      video.style.background = 'transparent'
+      video.style.display = ''
+      video.style.alignItems = ''
+      video.style.justifyContent = ''
+    }
+    video.addEventListener('loadeddata', removeLoadingBg, { once: true })
+    // 兜底：3 秒后无论如何去掉加载背景
+    const fallbackTimer = setTimeout(removeLoadingBg, 3000)
+
+    // 监听 track 状态 — 远程 track 无数据时 mute=true
+    const track = stream.getVideoTracks()[0]
+    if (track) {
+      const onMute = () => {
+        console.warn('[WebRTC] 屏幕视频 track 被 mute（无数据）:', peerId)
+        video.style.background = 'rgba(0,0,0,0.85)'
+      }
+      const onUnmute = () => {
+        console.log('[WebRTC] 屏幕视频 track unmute（数据恢复）:', peerId)
+        removeLoadingBg()
+      }
+      track.addEventListener('mute', onMute)
+      track.addEventListener('unmute', onUnmute)
+      // track 结束时清理
+      track.addEventListener('ended', () => {
+        clearTimeout(fallbackTimer)
+        track.removeEventListener('mute', onMute)
+        track.removeEventListener('unmute', onUnmute)
+      }, { once: true })
+    }
 
     document.body.appendChild(video)
     this.screenVideos.set(peerId, video)
@@ -509,9 +602,9 @@ class WebRTCManager {
       playPromise.catch((e) => console.warn('[WebRTC] video.play() 被阻:', e.name))
     }
 
-    const track = stream.getVideoTracks()[0]
     console.log('[WebRTC] 屏幕视频已挂载到主界面, track:', track?.readyState,
-      'streamId:', stream.id, 'trackCount:', stream.getVideoTracks().length)
+      'streamId:', stream.id, 'trackCount:', stream.getVideoTracks().length,
+      'muted:', track?.muted)
   }
 
   _hideScreenVideo(peerId) {
