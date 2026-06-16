@@ -112,14 +112,21 @@ class WebRTCManager {
       // 强制重启所有 peer 的 audio sender —— 仅设 enabled=true 有时浏览器不恢复编码
       if (audioTracks.length > 0) {
         const audioTrack = audioTracks[0]
+        const ops = []
         for (const pc of this.peers.values()) {
           const sender = pc.getSenders().find(s => s.track?.kind === 'audio')
           if (sender) {
-            sender.replaceTrack(null).then(() => {
-              sender.replaceTrack(audioTrack)
-            }).catch(() => {})
+            ops.push(
+              sender.replaceTrack(null).then(() =>
+                sender.replaceTrack(audioTrack)
+              ).catch((err) => {
+                console.warn('[WebRTC] replaceTrack 恢复失败:', err.message)
+              })
+            )
           }
         }
+        // 等待所有 replaceTrack 完成，避免 hook 中 toggleMic(true) 竞态
+        await Promise.allSettled(ops)
       }
       return this.localStream
     }
@@ -193,12 +200,37 @@ class WebRTCManager {
       // 不再销毁旧的 PC，否则会导致 ontrack 事件丢失和 ICE 重连
       if (this.peers.has(peerId)) {
         const pc = this.peers.get(peerId)
-        console.log('[WebRTC] 复用已有 PC 处理重协商, signalingState:', pc.signalingState)
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp))
-        const answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        sendAnswer(fromId, pc.localDescription)
-        console.log('[WebRTC] 重协商 Answer 已发送:', peerId)
+        console.log('[WebRTC] 复用已有 PC 处理重协商, signalingState:', pc.signalingState, 'iceState:', pc.iceConnectionState)
+
+        // 处理 glare（双方同时发 offer）：本地正在 offer 时收到对方的 offer
+        if (pc.signalingState === 'have-local-offer') {
+          console.log('[WebRTC] 检测到 glare，回滚本地 offer 后处理远程 offer')
+          await pc.setLocalDescription({ type: 'rollback' })
+        }
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          // 使用 userId 而非 socketId 作为路由键（服务端按 userId 精准路由）
+          sendAnswer(peerId, pc.localDescription)
+          console.log('[WebRTC] 重协商 Answer 已发送:', peerId)
+        } catch (err) {
+          console.error('[WebRTC] 重协商失败, signalingState:', pc.signalingState, 'error:', err.message)
+          // 如果 setRemoteDescription 失败，尝试回滚后重试一次
+          if (err.name === 'InvalidStateError' && pc.signalingState !== 'stable') {
+            try { await pc.setLocalDescription({ type: 'rollback' }) } catch (_) {}
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(sdp))
+              const answer = await pc.createAnswer()
+              await pc.setLocalDescription(answer)
+              sendAnswer(peerId, pc.localDescription)
+              console.log('[WebRTC] 重协商重试成功:', peerId)
+            } catch (retryErr) {
+              console.error('[WebRTC] 重协商重试也失败:', retryErr.message)
+            }
+          }
+        }
         return
       }
 
@@ -209,7 +241,7 @@ class WebRTCManager {
       const answer = await pc.createAnswer()
       await pc.setLocalDescription(answer)
 
-      sendAnswer(fromId, pc.localDescription)
+      sendAnswer(peerId, pc.localDescription)
     } catch (err) {
       console.error('[WebRTC] 处理 Offer 失败:', err)
     }
@@ -272,7 +304,11 @@ class WebRTCManager {
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 15 } },
+        video: {
+          frameRate: { ideal: 10 },
+          width: { max: 1280 },
+          height: { max: 720 },
+        },
         audio: false,
       })
 
@@ -284,17 +320,46 @@ class WebRTCManager {
       const skt = getSocket()
       console.log('[WebRTC] 开始屏幕共享, peers:', this.peers.size, 'track readyState:', videoTrack?.readyState)
       for (const [peerId, pc] of this.peers) {
-        if (pc.connectionState === 'closed' || pc.connectionState === 'failed') continue
+        if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+          console.log('[WebRTC] 跳过 peer (state:', pc.connectionState, '):', peerId)
+          continue
+        }
+
+        // 等待 signalingState 稳定，避免与正在进行的重协商冲突
+        const waitStart = Date.now()
+        while (pc.signalingState !== 'stable' && Date.now() - waitStart < 5000) {
+          console.log('[WebRTC] 等待 stable, current:', pc.signalingState, 'peer:', peerId)
+          await new Promise(r => setTimeout(r, 100))
+        }
+        if (pc.signalingState !== 'stable') {
+          console.warn('[WebRTC] 等待 stable 超时, 跳过 peer:', peerId)
+          continue
+        }
+
         pc.addTrack(videoTrack, stream)
+
+        // 限制屏幕共享编码带宽（减少 TURN 中继压力）
+        try {
+          const sender = pc.getSenders().find(s => s.track === videoTrack)
+          if (sender) {
+            const params = sender.getParameters()
+            if (!params.encodings) params.encodings = [{}]
+            params.encodings[0].maxBitrate = 1000000 // 1 Mbps
+            await sender.setParameters(params)
+          }
+        } catch (e) {
+          console.warn('[WebRTC] setParameters 失败:', e.message)
+        }
+
         try {
           const offer = await pc.createOffer()
           await pc.setLocalDescription(offer)
           if (skt?.connected) {
             skt.emit('offer', { targetId: peerId, sdp: pc.localDescription })
           }
-          console.log('[WebRTC] renegotiation offer sent to:', peerId)
+          console.log('[WebRTC] 屏幕共享 offer 已发送 to:', peerId, 'signalingState:', pc.signalingState)
         } catch (err) {
-          console.error('[WebRTC] renegotiation error:', peerId, err.message)
+          console.error('[WebRTC] 屏幕共享重协商失败:', peerId, err.message)
         }
       }
 
